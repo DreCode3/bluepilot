@@ -1,3 +1,7 @@
+> **DogPilot development branch — please don't install this on your vehicle.**
+> This is personal, in-progress work for one specific car and is not a release. For BluePilot itself,
+> please use [BluePilotDev/bluepilot](https://github.com/BluePilotDev/bluepilot). See [DOGPILOT.md](DOGPILOT.md).
+
 ![](selfdrive/assets/img_bluepilot_boot.jpg)
 
 Table of Contents
