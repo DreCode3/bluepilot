@@ -20,6 +20,8 @@ upstream base, so it can be reviewed or reverted on its own.
 | --- | --- | --- |
 | Driver-monitoring phone threshold 0.5 → 0.9 (`selfdrive/monitoring/policy.py`) | Reduces false phone-distraction alerts for the owner. Face, gaze and eye monitoring are unchanged. | Temporary — will be reverted |
 | Low-speed curve anticipation in angle mode (`lateral_angle_ext.py`, `_DP_LEAD_*`; param `DogPilotLowSpeedLead`, default on) | Between ~20 and ~35 mph, looks ~0.9 s further ahead in the model's plan and weights it 0.8 instead of 0.5, so curves are commanded earlier. Tapers to stock below 12 mph and by 55 mph; identical to stock at and above 55 mph. | Experiment |
+| Camera offset in the stock model runner (`selfdrive/modeld/dogpilot_offset.py`, param `CameraOffset`, default 0) | sunnypilot's lateral camera offset, applied in the model frame so it is the same at every distance. Corrects a lateral bias without changing the driving model. | Experiment, starts at 0 |
+| DogPilot items in BluePilot > Lateral (comma 4) | On/off for the low-speed lead and a camera-offset slider, for A/B drives. | Tooling |
 
 Settings-only experiments (BluePilot menu values) are tracked in the owner's DogPilot project,
 not here.
