@@ -27,7 +27,10 @@ from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
+from openpilot.common.transformations.model import medmodel_intrinsics, sbigmodel_intrinsics
+from openpilot.selfdrive.modeld.dogpilot_offset import dp_shift_model_warp
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
+
 
 PROCESS_NAME = "selfdrive.modeld.modeld"
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
@@ -197,6 +200,11 @@ def main(demo=False):
 
   publish_state = PublishState()
   params = Params()
+  # DogPilot: CameraOffset param (virtual lateral shift, + = left) for the stock runner, see dp_shift_model_warp.
+  # Any failure falls back to the unshifted warp. Setting changes are logged so drives can be split by them.
+  dp_offset_target = 0.0
+  dp_offset = 0.0
+  dp_settings_last = None
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -264,12 +272,31 @@ def main(demo=False):
     v_ego = max(sm["carState"].vEgo, 0.)
     if sm.frame % 60 == 0:
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
+      try:
+        dp_settings = (float(params.get("CameraOffset", return_default=True) or 0.0),
+                       bool(params.get_bool("DogPilotLowSpeedLead")))
+        dp_offset_target = max(-0.35, min(0.35, dp_settings[0]))
+        if dp_settings != dp_settings_last:
+          cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1])
+          dp_settings_last = dp_settings
+      except Exception:
+        cloudlog.exception("dogpilot: reading settings failed")
     lat_delay = model.lat_delay + LAT_SMOOTH_SECONDS
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
       model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
       model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
+      try:
+        dp_offset = 0.9 * dp_offset + 0.1 * dp_offset_target  # ease in over a few calibration updates
+        if abs(dp_offset) > 1e-4:
+          calib = sm["liveCalibration"]
+          height = calib.height[0] if len(calib.height) else 1.22
+          shifted_main = dp_shift_model_warp(model_transform_main, medmodel_intrinsics, height, dp_offset)
+          shifted_extra = dp_shift_model_warp(model_transform_extra, sbigmodel_intrinsics, height, dp_offset)
+          model_transform_main, model_transform_extra = shifted_main, shifted_extra
+      except Exception:
+        cloudlog.exception("dogpilot: camera offset failed, using unshifted warp")
       live_calib_seen = True
 
     traffic_convention = np.zeros(2)
