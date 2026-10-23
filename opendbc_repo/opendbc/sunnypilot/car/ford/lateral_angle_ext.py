@@ -76,6 +76,18 @@ _PSCM_DREF_M = (0.5, 0.95, 1.4, 2.075, 2.75, 3.875)
 # Default blend ratio validated on F-150 fleet data (0.5s lookup time).
 _FORD_PATH_ANGLE_BLEND_RATIO_DEFAULT = 0.50
 
+# DogPilot: low-speed curve anticipation (param ``DogPilotLowSpeedLead``, default on).
+# Measured on an Explorer (non-CAN-FD, angle mode): in 20-45 mph curves the car's curvature trails the
+# request by ~0.35 s, while the model's own yaw-rate plan 1.0-1.5 s ahead leads that request by 0.3-0.55 s.
+# Stock VLT looks at most ~0.3 s ahead with a 50% prediction weight, too little to cover the lag.
+# Look further ahead and weight the prediction more between ~20 and ~35 mph, tapering back to stock
+# below ~12 mph (yaw-rate / v gets noisy) and by 55 mph (identical to stock at and above 55 mph).
+# The extra look-ahead still goes through the stock kappa_factor taper, and the exit-biased blend
+# reduction near PSCM limits still applies on top of the larger weight.
+_DP_LEAD_SPEEDS_MS = (12.0 * 0.44704, 20.0 * 0.44704, 35.0 * 0.44704, 55.0 * 0.44704)
+_DP_LEAD_EXTRA_S = (0.10, 0.90, 0.90, 0.0)   # extra look-ahead above t_base (stock: 0.10 tapering to 0 by 55 mph)
+_DP_LEAD_BLEND = (0.50, 0.80, 0.80, 0.50)    # predicted-curvature weight (stock: 0.50 at all speeds)
+
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.
 # t_lookup = t_base + t_extra_max × speed_factor(v) × kappa_factor(|κ|)
 # t_base = liveDelay.lateralDelay + DT_MDL — always matches the planner's pre-compensation floor.
@@ -143,6 +155,8 @@ class LateralAngleExt:
     self.path_angle_blend_ratio = _FORD_PATH_ANGLE_BLEND_RATIO_DEFAULT
     # Max extra VLT above t_base; from ``FordVLTExtraMax`` param
     self.vlt_extra_max = _VLT_T_EXTRA_MAX
+    # DogPilot: low-speed curve anticipation (see _DP_LEAD_*); ``DogPilotLowSpeedLead`` param
+    self.dp_low_speed_lead = True
     # Telemetry: final path_angle (rad) after limits (see bp_card_publisher)
     self.bp_path_angle_final = 0.0
     # High-speed gain factors: set per-platform via carFingerprint in update_angle_params.
@@ -223,6 +237,12 @@ class LateralAngleExt:
         if raw is not None and raw != b"":
           self.lane_change_factor_high_ang = float(clip(
             float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw), 0.85, 1.50))
+      except Exception:
+        pass
+      try:
+        raw = params.get("DogPilotLowSpeedLead", return_default=True)
+        if raw is not None and raw != b"" and raw != "":
+          self.dp_low_speed_lead = raw in (True, 1, b"1", "1")
       except Exception:
         pass
       # BluePilot: angle-mode lane centering trim (advanced lane positioning) params.
@@ -412,7 +432,10 @@ class LateralAngleExt:
       _kappa_factor = 1.0  # curve deepening ahead: full extra lookahead for gradual entry
     else:
       _kappa_factor = float(interp(abs(desired_curvature), [_VLT_KAPPA_FULL, _VLT_KAPPA_TAPER], [1.0, 0.0]))
-    curvature_lookup_time = _t_base + self.vlt_extra_max * _speed_factor * _kappa_factor
+    _t_extra = self.vlt_extra_max * _speed_factor
+    if self.dp_low_speed_lead:
+      _t_extra = max(_t_extra, float(interp(v_ego, _DP_LEAD_SPEEDS_MS, _DP_LEAD_EXTRA_S)))
+    curvature_lookup_time = _t_base + _t_extra * _kappa_factor
     self.bp_curvature_lookup_time = curvature_lookup_time
 
     predicted_curvature = 0.0
@@ -423,6 +446,8 @@ class LateralAngleExt:
       )
 
     b = float(self.path_angle_blend_ratio)
+    if self.dp_low_speed_lead:
+      b = max(b, float(interp(v_ego, _DP_LEAD_SPEEDS_MS, _DP_LEAD_BLEND)))
     b = float(clip(b, 0.0, 1.0))
 
     # Exit-biased blend: near the PSCM authority limit or while the planner is actively
