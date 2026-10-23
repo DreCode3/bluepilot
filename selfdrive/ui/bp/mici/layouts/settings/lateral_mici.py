@@ -15,6 +15,12 @@ class LateralLayoutMici(NavScroller):
     if back_callback is not None:
       self.set_back_callback(back_callback)
 
+    # --- DogPilot experiments (always visible) ---
+    self.dp_low_speed_lead = BigParamControlBP("DogPilot: Low-Speed Curve Lead", "DogPilotLowSpeedLead")
+    self.dp_camera_offset = BigParamFloatControl(
+      "DogPilot: Camera Offset (m, - moves right)", "CameraOffset", min=-0.35, max=0.35, step=0.01,
+    )
+
     # --- Angle-mode-only items ---
     self.low_speed_factor = BigParamFloatControl(
       "Low Speed Adjustment Factor", "FordLowSpeedFactor_ang", min=0.5, max=1.5, step=0.01,
@@ -81,6 +87,8 @@ class LateralLayoutMici(NavScroller):
     )
 
     self._scroller.add_widgets([
+      self.dp_low_speed_lead,
+      self.dp_camera_offset,
       self.low_speed_factor,
       self.high_speed_factor,
       self.high_speed_dampening,
@@ -104,6 +112,7 @@ class LateralLayoutMici(NavScroller):
     ])
 
     self._refresh_toggles = (
+      ("DogPilotLowSpeedLead", self.dp_low_speed_lead),
       ("disable_BP_lat_UI", self.disable_BP_lat),
       ("BlinkerPauseLaneChange", self.disable_lane_change_under_speed),
       ("enable_human_turn_detection_curv", self.enable_human_turn_detection),
