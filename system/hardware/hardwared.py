@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import faulthandler
 import fcntl
 import os
 import queue
@@ -101,6 +102,32 @@ def touch_thread(end_event):
       time.sleep(DT_HW)
 
 
+# DogPilot: stall diagnostics. A >3 s gap in the main loop dumps every thread's Python stack to this file
+# (faulthandler's watchdog runs in C, so it works even if a stuck call holds the GIL), and slow queries in
+# hw_state_thread are logged by name. No behaviour change.
+DP_STALL_FILE = "/data/log/dogpilot_hardwared_stall.txt"
+DP_STALL_DUMP_S = 3.0
+DP_SLOW_CALL_S = 1.0
+
+
+def _dp_open_stall_file():
+  try:
+    if os.path.exists(DP_STALL_FILE) and os.path.getsize(DP_STALL_FILE) > 1_000_000:
+      os.replace(DP_STALL_FILE, DP_STALL_FILE + ".old")
+    return open(DP_STALL_FILE, "a")
+  except Exception:
+    cloudlog.exception("dogpilot: cannot open hardwared stall file")
+    return None
+
+
+def _dp_timed(times, name, fn, *args):
+  t0 = time.monotonic()
+  try:
+    return fn(*args)
+  finally:
+    times[name] = round(time.monotonic() - t0, 3)
+
+
 def hw_state_thread(end_event, hw_queue):
   """Handles non critical hardware state, and sends over queue"""
   count = 0
@@ -111,9 +138,10 @@ def hw_state_thread(end_event, hw_queue):
   while not end_event.is_set():
     # these are expensive calls. update every 10s
     if (count % int(10. / DT_HW)) == 0:
+      times = {}
       try:
-        network_type = HARDWARE.get_network_type()
-        modem_temps = HARDWARE.get_modem_temperatures()
+        network_type = _dp_timed(times, "get_network_type", HARDWARE.get_network_type)
+        modem_temps = _dp_timed(times, "get_modem_temperatures", HARDWARE.get_modem_temperatures)
         if len(modem_temps) == 0 and prev_hw_state is not None:
           modem_temps = prev_hw_state.modem_temps
 
@@ -124,14 +152,14 @@ def hw_state_thread(end_event, hw_queue):
           if modem_version is not None:
             cloudlog.event("modem version", version=modem_version)
 
-        tx, rx = HARDWARE.get_modem_data_usage()
+        tx, rx = _dp_timed(times, "get_modem_data_usage", HARDWARE.get_modem_data_usage)
 
         hw_state = HardwareState(
           network_type=network_type,
-          network_info=HARDWARE.get_network_info(),
-          network_strength=HARDWARE.get_network_strength(network_type),
+          network_info=_dp_timed(times, "get_network_info", HARDWARE.get_network_info),
+          network_strength=_dp_timed(times, "get_network_strength", HARDWARE.get_network_strength, network_type),
           network_stats={'wwanTx': tx, 'wwanRx': rx},
-          network_metered=HARDWARE.get_network_metered(network_type),
+          network_metered=_dp_timed(times, "get_network_metered", HARDWARE.get_network_metered, network_type),
           modem_temps=modem_temps,
         )
 
@@ -143,6 +171,8 @@ def hw_state_thread(end_event, hw_queue):
         prev_hw_state = hw_state
       except Exception:
         cloudlog.exception("Error getting hardware state")
+      if times and max(times.values()) > DP_SLOW_CALL_S:
+        cloudlog.warning(f"dogpilot: slow hardware query {times}")
 
     count += 1
     time.sleep(DT_HW)
@@ -197,7 +227,16 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   fan_controller = FanController(int(1./DT_HW))
 
+  dp_stall_file = _dp_open_stall_file()
+  dp_last_iter = time.monotonic()
+
   while not end_event.is_set():
+    if dp_stall_file is not None:
+      faulthandler.dump_traceback_later(DP_STALL_DUMP_S, repeat=False, file=dp_stall_file)
+    dp_now = time.monotonic()
+    if dp_now - dp_last_iter > 2.0:
+      cloudlog.warning(f"dogpilot: hardwared main loop stalled {dp_now - dp_last_iter:.1f} s (stacks in {DP_STALL_FILE} if > {DP_STALL_DUMP_S} s)")
+    dp_last_iter = dp_now
     sm.update(PANDA_STATES_TIMEOUT)
 
     pandaStates = sm['pandaStates']
@@ -483,6 +522,7 @@ def main():
         break
   finally:
     end_event.set()
+    faulthandler.cancel_dump_traceback_later()
 
   for t in threads:
     t.join()
