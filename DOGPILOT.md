@@ -19,6 +19,7 @@ upstream base, so it can be reviewed or reverted on its own.
 | Change | Why | Status |
 | --- | --- | --- |
 | Driver-monitoring phone threshold 0.5 → 0.9 (`selfdrive/monitoring/policy.py`) | Reduces false phone-distraction alerts for the owner. Face, gaze and eye monitoring are unchanged. | Temporary — will be reverted |
+| Low-speed curve anticipation in angle mode (`lateral_angle_ext.py`, `_DP_LEAD_*`; param `DogPilotLowSpeedLead`, default on) | Between ~20 and ~35 mph, looks ~0.9 s further ahead in the model's plan and weights it 0.8 instead of 0.5, so curves are commanded earlier. Tapers to stock below 12 mph and by 55 mph; identical to stock at and above 55 mph. | Experiment |
 
 Settings-only experiments (BluePilot menu values) are tracked in the owner's DogPilot project,
 not here.
