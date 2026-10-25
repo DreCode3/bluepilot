@@ -110,6 +110,13 @@ _DP_BOOST_EXIT_FALL_PER_S = 1.5               # level fall once the request is b
 # 0.5 s when a lane change starts and back out over 1.5 s after it ends.
 _DP_LC_IN_S, _DP_LC_OUT_S = 0.5, 1.5
 
+# DogPilot: mid-speed factor (param ``DogPilotMidSpeedFactor``, 0 = off). BluePilot blends one Low Speed Adjustment
+# Factor from 30 to 60 mph, so calming city steering (20-40 mph) also trimmed 45-60 mph curves. When set, the
+# blend above 40 mph is computed with this factor instead, handing over from the low-speed factor between 30 and
+# 40 mph. Like the low-speed factor it acts after the deviation clip, and lane changes cap it at 1.0 too.
+_DP_MID_HANDOVER_MS = (30.0 * 0.44704, 40.0 * 0.44704)
+_DP_MID_RANGE = (0.5, 1.5)
+
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.
 # t_lookup = t_base + t_extra_max × speed_factor(v) × kappa_factor(|κ|)
 # t_base = liveDelay.lateralDelay + DT_MDL — always matches the planner's pre-compensation floor.
@@ -181,6 +188,7 @@ class LateralAngleExt:
     self.dp_low_speed_lead = False
     # DogPilot: high-demand boost max multiplier (see _DP_BOOST_*); ``DogPilotCurveBoost`` param, 1.0 = off
     self.dp_curve_boost = 1.0
+    self.dp_mid_speed_factor = 0.0  # DogPilot: 0 = off (see _DP_MID_*)
     self.bp_dp_boost = 1.0
     self.dp_boost_level = 0.0  # 0..1 share of the boost (see _DP_BOOST_*)
     self.dp_lc_weight = 0.0  # 1.0 = lane-change gain (see _DP_LC_*)
@@ -270,6 +278,13 @@ class LateralAngleExt:
         raw = params.get("DogPilotLowSpeedLead", return_default=True)
         if raw is not None and raw != b"" and raw != "":
           self.dp_low_speed_lead = raw in (True, 1, b"1", "1")
+      except Exception:
+        pass
+      try:
+        raw = params.get("DogPilotMidSpeedFactor", return_default=True)
+        if raw is not None and raw != b"" and raw != "":
+          val = float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw)
+          self.dp_mid_speed_factor = 0.0 if val <= 0.0 else float(clip(val, *_DP_MID_RANGE))
       except Exception:
         pass
       try:
@@ -578,7 +593,14 @@ class LateralAngleExt:
       self.dp_lc_weight = max(0.0, self.dp_lc_weight - _STEER_DT / _DP_LC_OUT_S)
     _low_factor = self.low_speed_curv_factor
     _low_factor += (min(_low_factor, 1.0) - _low_factor) * self.dp_lc_weight
-    self.high_gain_calc = interp(v_ego, [13.5, 26.82], [(1.30 * _low_factor), (self.path_angle_gain_highC_highV * self.high_speed_curv_factor)])
+    _high_gain = self.path_angle_gain_highC_highV * self.high_speed_curv_factor
+    self.high_gain_calc = interp(v_ego, [13.5, 26.82], [(1.30 * _low_factor), _high_gain])
+    if self.dp_mid_speed_factor > 0.0:  # DogPilot: separate mid-speed factor (see _DP_MID_*)
+      _mid_factor = self.dp_mid_speed_factor
+      _mid_factor += (min(_mid_factor, 1.0) - _mid_factor) * self.dp_lc_weight
+      _mid_gain = interp(v_ego, [13.5, 26.82], [(1.30 * _mid_factor), _high_gain])
+      _w = float(interp(v_ego, _DP_MID_HANDOVER_MS, [0.0, 1.0]))
+      self.high_gain_calc = self.high_gain_calc + (_mid_gain - self.high_gain_calc) * _w
 
     # As the curve gets bigger, we will need a little boost to the signal to to not understeer
     self.curvature_factor = interp(abs(kappa_cmd), [0.0007, 0.001], [self.low_gain_calc, self.high_gain_calc])

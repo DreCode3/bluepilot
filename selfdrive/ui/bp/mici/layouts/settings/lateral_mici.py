@@ -23,6 +23,10 @@ class LateralLayoutMici(NavScroller):
     self.dp_curve_centering = BigParamFloatControl(
       "DogPilot: Curve Centering (0 = off)", "DogPilotCurveCentering", min=0.0, max=2.0, step=0.1,
     )
+    self.dp_curve_wide_cap = BigParamControlBP("DogPilot: Curve Centering Wide Lanes", "DogPilotCurveWideCap")
+    self.dp_mid_speed_factor = BigParamFloatControl(
+      "DogPilot: Mid-Speed Factor (0 = off)", "DogPilotMidSpeedFactor", min=0.0, max=1.5, step=0.05,
+    )
     self.dp_curve_boost = BigParamFloatControl(
       "DogPilot: Tight-Curve Boost (1.0 = off)", "DogPilotCurveBoost", min=1.0, max=1.5, step=0.05,
     )
@@ -96,7 +100,9 @@ class LateralLayoutMici(NavScroller):
       self.dp_low_speed_lead,
       self.dp_camera_offset,
       self.dp_curve_centering,
+      self.dp_curve_wide_cap,
       self.dp_curve_boost,
+      self.dp_mid_speed_factor,
       self.low_speed_factor,
       self.high_speed_factor,
       self.high_speed_dampening,
@@ -121,6 +127,7 @@ class LateralLayoutMici(NavScroller):
 
     self._refresh_toggles = (
       ("DogPilotLowSpeedLead", self.dp_low_speed_lead),
+      ("DogPilotCurveWideCap", self.dp_curve_wide_cap),
       ("disable_BP_lat_UI", self.disable_BP_lat),
       ("BlinkerPauseLaneChange", self.disable_lane_change_under_speed),
       ("enable_human_turn_detection_curv", self.enable_human_turn_detection),

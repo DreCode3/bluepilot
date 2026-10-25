@@ -165,6 +165,35 @@ class TestDogPilotCurveCenteringLaneChangeHold(unittest.TestCase):
     self.assertLess(cc.offset, before)
 
 
+def lanes_w(k, width):
+  return lanes(k, half_width=width / 2)
+
+
+class TestDogPilotCurveCenteringWideCap(unittest.TestCase):
+  def settle(self, width, wide, a=2.5, v=30.0, s=10.0):
+    cc = DPCurveCentering(ModelConstants.X_IDXS)
+    cc.wide_cap = wide
+    for _ in range(int(s / cc.dt)):
+      cc.update(*lanes_w(a / v ** 2, width), 0.9, 0.9, v, 1.5, True)
+    return cc.offset
+
+  def test_off_keeps_the_fixed_cap(self):
+    for width in (3.0, 3.7, 4.2):
+      self.assertAlmostEqual(self.settle(width, False), DP_CURVE_MAX_M, places=6)
+
+  def test_interstate_lane_allows_more(self):
+    self.assertAlmostEqual(self.settle(3.4, True), 0.50, places=2)   # (3.4 - 2.0) / 2 - 0.20
+    self.assertAlmostEqual(self.settle(3.26, True), 0.43, places=2)
+
+  def test_narrower_lane_same_or_less_than_today(self):
+    self.assertAlmostEqual(self.settle(3.1, True), 0.35, places=2)
+    self.assertAlmostEqual(self.settle(3.0, True), 0.30, places=2)
+    self.assertAlmostEqual(self.settle(2.7, True), 0.20, places=2)
+
+  def test_never_above_the_ceiling(self):
+    self.assertLessEqual(self.settle(4.5, True), 0.50 + 1e-9)
+
+
 class TestDogPilotCurveCenteringEarly(unittest.TestCase):
   def test_off_by_default_and_identical_when_off(self):
     a, b = DPCurveCentering(ModelConstants.X_IDXS), DPCurveCentering(ModelConstants.X_IDXS)

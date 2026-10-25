@@ -42,6 +42,15 @@ DP_CURVE_FADE_FALL_PER_S = 1.0
 # Early mode also measures the curve farther ahead (27-61 m, where the model's lane lines are still accurate to
 # a few cm) and uses whichever of near/far is curving harder, so the shift builds before the curve and holds
 # through it; and it releases the shift more slowly after the curve.
+# Wide-lane cap (param DogPilotCurveWideCap): in long moderate curves the shift sits at the 0.35 m cap and the car
+# can still drift 0.5-0.8 m in. With this on, the cap follows the lane width the model sees (line centre to line
+# centre; 3.26-3.40 m on Oct 25 interstates): half the room beside a 2.0 m-wide car, minus a 0.20 m margin, between
+# 0.20 and 0.50 m. 3.4 m allows 0.50 m, 3.26 m 0.43 m, 3.1 m 0.35 m (as today), 3.0 m 0.30 m. It bounds the view
+# shift; the car itself moves only 30-75% of it and still sits slightly inside in curves.
+DP_CURVE_CAR_WIDTH_M = 2.0
+DP_CURVE_LINE_MARGIN_M = 0.20
+DP_CURVE_WIDE_CAP_RANGE = (0.20, 0.50)
+DP_CURVE_WIDTH_TAU_S = 1.0
 DP_CURVE_X_IDX_FAR = (12, 14, 16, 18)   # x = 27, 36.75, 48, 60.75 m
 DP_CURVE_RELEASE_MS = 0.08              # early mode: release rate toward 0, m per second
 
@@ -62,6 +71,8 @@ class DPCurveCentering:
     self._k_row_far = self._fit_row(x_samples, DP_CURVE_X_IDX_FAR)
     self.dt = dt
     self.early = False
+    self.wide_cap = False
+    self.width = None         # smoothed lane width (m) for the wide-lane cap
     self.tight = 0.0          # held fade level, 0..1 (see DP_CURVE_FADE_*)
     self.target = 0.0
     self.offset = 0.0
@@ -91,6 +102,13 @@ class DPCurveCentering:
   def _tight(a_lat):
     return min(max((a_lat - DP_CURVE_FADE_MS2[0]) / (DP_CURVE_FADE_MS2[1] - DP_CURVE_FADE_MS2[0]), 0.0), 1.0)
 
+  def cap(self):
+    """Largest shift allowed now: DP_CURVE_MAX_M, or with the wide-lane cap on, from the smoothed lane width."""
+    if not self.wide_cap or self.width is None:
+      return DP_CURVE_MAX_M
+    room = (self.width - DP_CURVE_CAR_WIDTH_M) / 2.0 - DP_CURVE_LINE_MARGIN_M
+    return min(max(room, DP_CURVE_WIDE_CAP_RANGE[0]), DP_CURVE_WIDE_CAP_RANGE[1])
+
   def target_for(self, left_y, right_y, left_prob, right_prob, v_ego, strength, tight=None):
     """Shift for this frame. tight: held fade level (update() passes it); None = this frame's own."""
     k = self._curvature(left_y, right_y, left_prob, right_prob)
@@ -99,7 +117,7 @@ class DPCurveCentering:
     a_lat = abs(k) * v_ego * v_ego
     fade = min(max((v_ego - DP_CURVE_V_MIN) / (DP_CURVE_V_FULL - DP_CURVE_V_MIN), 0.0), 1.0)
     tight = self._tight(a_lat) if tight is None else tight
-    shift = min(DP_CURVE_MAX_M, strength * DP_CURVE_M_PER_MS2 * max(a_lat - DP_CURVE_DEADBAND_MS2, 0.0)) * fade * (1.0 - tight)
+    shift = min(self.cap(), strength * DP_CURVE_M_PER_MS2 * max(a_lat - DP_CURVE_DEADBAND_MS2, 0.0)) * fade * (1.0 - tight)
     # right curve (k > 0): inside is right, so move the car left (+)
     return shift if k > 0 else -shift
 
@@ -109,6 +127,9 @@ class DPCurveCentering:
     if hold and active:
       return self.offset
     k = self._curvature(left_y, right_y, left_prob, right_prob) if active else None
+    if k is not None:   # usable lane lines: track the lane width for the wide-lane cap
+      w = float(np.asarray(right_y)[0] - np.asarray(left_y)[0])
+      self.width = w if self.width is None else self.width + (w - self.width) * min(1.0, self.dt / DP_CURVE_WIDTH_TAU_S)
     a_lat = abs(k) * v_ego * v_ego if k is not None else 0.0
     tight_now = self._tight(a_lat)
     if tight_now >= self.tight:

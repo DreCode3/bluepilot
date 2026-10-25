@@ -284,14 +284,18 @@ def main(demo=False):
         dp_settings = (float(params.get("CameraOffset", return_default=True) or 0.0),
                        bool(params.get_bool("DogPilotLowSpeedLead")),
                        float(params.get("DogPilotCurveCentering", return_default=True) or 0.0),
-                       bool(params.get_bool("DogPilotCurveEarly")))
+                       bool(params.get_bool("DogPilotCurveEarly")),
+                       bool(params.get_bool("DogPilotCurveWideCap")),
+                       float(params.get("DogPilotMidSpeedFactor", return_default=True) or 0.0))
         dp_offset_target = max(-0.35, min(0.35, dp_settings[0]))
         dp_curve_strength = max(0.0, min(2.0, dp_settings[2]))
         dp_curve.early = dp_settings[3]
+        dp_curve.wide_cap = dp_settings[4]
         if dp_settings != dp_settings_last:
           cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1],
                          curve_centering=dp_settings[2], curve_fade=True, curve_early=dp_settings[3], curve_hold=True,
-                         curve_lc_hold=True, curve_fade_from=DP_CURVE_FADE_MS2[0])
+                         curve_lc_hold=True, curve_fade_from=DP_CURVE_FADE_MS2[0], curve_wide_cap=dp_settings[4],
+                         mid_speed_factor=dp_settings[5])
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
