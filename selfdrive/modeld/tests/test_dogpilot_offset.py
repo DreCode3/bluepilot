@@ -8,7 +8,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_f
 from openpilot.common.transformations.model import get_warp_matrix, medmodel_intrinsics, sbigmodel_intrinsics
 from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DP_CURVE_RELEASE_MS, DPCurveCentering,
+from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DP_CURVE_RELEASE_MS, DPCurveCentering,
                                                         dp_shift_model_warp)
 
 H = 1.40
@@ -83,11 +83,18 @@ class TestDogPilotCurveCentering(unittest.TestCase):
 
   def test_fades_out_in_very_tight_curves(self):
     v = 30.0
-    full = self.settle(DPCurveCentering(ModelConstants.X_IDXS), 1.7 / v ** 2, v)
-    half = self.settle(DPCurveCentering(ModelConstants.X_IDXS), 2.15 / v ** 2, v)
+    f0, f1 = DP_CURVE_FADE_MS2
+    mid = (f0 + f1) / 2
+    full = self.settle(DPCurveCentering(ModelConstants.X_IDXS), (f0 - 0.1) / v ** 2, v)
+    half = self.settle(DPCurveCentering(ModelConstants.X_IDXS), mid / v ** 2, v)
     self.assertGreater(full, 0.25)
-    self.assertAlmostEqual(half, 0.5 * min(DP_CURVE_MAX_M, 0.2 * (2.15 - 0.25)), places=3)
-    self.assertEqual(self.settle(DPCurveCentering(ModelConstants.X_IDXS), 2.6 / v ** 2, v), 0.0)
+    self.assertAlmostEqual(half, 0.5 * min(DP_CURVE_MAX_M, 0.2 * (mid - 0.25)), places=3)
+    self.assertEqual(self.settle(DPCurveCentering(ModelConstants.X_IDXS), (f1 + 0.1) / v ** 2, v), 0.0)
+
+  def test_keeps_the_shift_in_tight_highway_curves(self):
+    # Oct 25: 2.4-2.8 m/s^2 highway curves; the old 1.8-2.5 fade removed the shift at entry and the car cut 0.9 m
+    v = 35.0
+    self.assertAlmostEqual(self.settle(DPCurveCentering(ModelConstants.X_IDXS), 2.6 / v ** 2, v, strength=1.5), DP_CURVE_MAX_M, places=6)
 
   def test_cap_and_rate(self):
     cc = DPCurveCentering(ModelConstants.X_IDXS)
@@ -112,14 +119,15 @@ def lanes_curve_from(x0, k, half_width=1.8):
 
 class TestDogPilotCurveCenteringFadeHold(unittest.TestCase):
   def test_holds_faded_through_the_ramp_pattern(self):
-    # Oct 25 ramp: lateral acceleration wobbling between ~2.0 and ~2.6 m/s^2 inside one long tight curve
+    # a curve wobbling in and out of the fade band (Oct 25 ramp pattern, shifted to the current band)
     v = 25.0
+    f0, f1 = DP_CURVE_FADE_MS2
     cc = DPCurveCentering(ModelConstants.X_IDXS)
     for _ in range(40):
-      cc.update(*lanes(2.6 / v ** 2), 0.9, 0.9, v, 1.5, True)
+      cc.update(*lanes((f1 + 0.1) / v ** 2), 0.9, 0.9, v, 1.5, True)
     offs = []
     for _ in range(4):
-      for a in (2.0, 2.6):
+      for a in (f0 + 0.2, f1 + 0.1):
         for _ in range(30):
           offs.append(cc.update(*lanes(a / v ** 2), 0.9, 0.9, v, 1.5, True))
     self.assertLess(max(abs(o) for o in offs), 0.06)   # was jumping between ~0 and ~0.28 m
@@ -128,7 +136,7 @@ class TestDogPilotCurveCenteringFadeHold(unittest.TestCase):
     v = 30.0
     cc = DPCurveCentering(ModelConstants.X_IDXS)
     for _ in range(40):
-      cc.update(*lanes(2.6 / v ** 2), 0.9, 0.9, v, 1.0, True)
+      cc.update(*lanes((DP_CURVE_FADE_MS2[1] + 0.1) / v ** 2), 0.9, 0.9, v, 1.0, True)
     for _ in range(200):                               # 10 s of an ordinary 1.2 m/s^2 curve
       cc.update(*lanes(1.2 / v ** 2), 0.9, 0.9, v, 1.0, True)
     self.assertAlmostEqual(cc.offset, 0.2 * (1.2 - 0.25), places=2)

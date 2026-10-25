@@ -26,9 +26,10 @@ DP_CURVE_MAX_M = 0.35                   # hard cap on the curve shift, any stren
 DP_CURVE_RATE_MS = 0.20                 # max change of the shift, m per second
 DP_CURVE_TAU_S = 0.30                   # smoothing of the target
 DP_CURVE_V_MIN, DP_CURVE_V_FULL = 9.0, 13.0  # m/s: off below ~20 mph, full above ~29 mph
-# Fade the shift out in very tight curves: there the car runs short of steering (it delivers 0.65-0.85 of
-# what it's sent above ~2 m/s^2), and the model's inside line needs less steering than the centre line.
-DP_CURVE_FADE_MS2 = (1.8, 2.5)
+# Fade the shift out only in extreme curves. It used to fade from 1.8 m/s^2 because the car ran short of
+# steering there, but the tight-curve boost now covers that, and removing the outward shift at the entry of a
+# 2.4-2.8 m/s^2 highway curve made the car swing 0.5-0.95 m inside (the model also reacts to the shift moving).
+DP_CURVE_FADE_MS2 = (3.0, 3.8)
 # The fade must not flicker: the measured curvature wobbles inside the 1.8-2.5 band and the model reacts to the
 # shift moving (Oct 25 ramp: shift jumped between -0.28 and 0 m every ~3 s). The fade rises quickly, holds while
 # the curve is still tight (above DP_CURVE_FADE_HOLD_MS2), and releases quickly once it has eased off.

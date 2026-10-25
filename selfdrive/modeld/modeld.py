@@ -28,7 +28,7 @@ from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, 
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.common.transformations.model import medmodel_intrinsics, sbigmodel_intrinsics
-from openpilot.selfdrive.modeld.dogpilot_offset import DPCurveCentering, dp_shift_model_warp
+from openpilot.selfdrive.modeld.dogpilot_offset import DP_CURVE_FADE_MS2, DPCurveCentering, dp_shift_model_warp
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 
 LaneChangeState = log.LaneChangeState
@@ -291,7 +291,7 @@ def main(demo=False):
         if dp_settings != dp_settings_last:
           cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1],
                          curve_centering=dp_settings[2], curve_fade=True, curve_early=dp_settings[3], curve_hold=True,
-                         curve_lc_hold=True)
+                         curve_lc_hold=True, curve_fade_from=DP_CURVE_FADE_MS2[0])
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
