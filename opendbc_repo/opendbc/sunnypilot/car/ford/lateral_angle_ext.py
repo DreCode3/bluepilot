@@ -88,6 +88,15 @@ _DP_LEAD_SPEEDS_MS = (12.0 * 0.44704, 20.0 * 0.44704, 35.0 * 0.44704, 55.0 * 0.4
 _DP_LEAD_EXTRA_S = (0.10, 0.90, 0.90, 0.0)   # extra look-ahead above t_base (stock: 0.10 tapering to 0 by 55 mph)
 _DP_LEAD_BLEND = (0.50, 0.80, 0.80, 0.50)    # predicted-curvature weight (stock: 0.50 at all speeds)
 
+# DogPilot: high-demand boost. In tight curves the car delivers a falling share of the path angle it is sent
+# (~0.95 in ordinary curves, 0.65-0.85 above ~2 m/s^2 at highway speed), so it drifts wide. Scale the path
+# angle up only when the request itself is large: x1.0 up to 1.8 m/s^2, rising to ``DogPilotCurveBoost`` (max
+# multiplier, 1.0 = off) at 2.5 m/s^2, faded in from 40 to 50 mph. It acts after the deviation clip, so the
+# kappa_cmd that ford.h's shadow check sees is unchanged; the path-angle range and rate limits still apply.
+_DP_BOOST_ACCEL = (1.8, 2.5)                  # m/s^2 of requested lateral acceleration (|kappa_cmd| * v^2)
+_DP_BOOST_SPEEDS_MS = (40.0 * 0.44704, 50.0 * 0.44704)
+_DP_BOOST_MAX = 1.5
+
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.
 # t_lookup = t_base + t_extra_max × speed_factor(v) × kappa_factor(|κ|)
 # t_base = liveDelay.lateralDelay + DT_MDL — always matches the planner's pre-compensation floor.
@@ -157,6 +166,9 @@ class LateralAngleExt:
     self.vlt_extra_max = _VLT_T_EXTRA_MAX
     # DogPilot: low-speed curve anticipation (see _DP_LEAD_*); ``DogPilotLowSpeedLead`` param
     self.dp_low_speed_lead = True
+    # DogPilot: high-demand boost max multiplier (see _DP_BOOST_*); ``DogPilotCurveBoost`` param, 1.0 = off
+    self.dp_curve_boost = 1.0
+    self.bp_dp_boost = 1.0
     # Telemetry: final path_angle (rad) after limits (see bp_card_publisher)
     self.bp_path_angle_final = 0.0
     # High-speed gain factors: set per-platform via carFingerprint in update_angle_params.
@@ -243,6 +255,13 @@ class LateralAngleExt:
         raw = params.get("DogPilotLowSpeedLead", return_default=True)
         if raw is not None and raw != b"" and raw != "":
           self.dp_low_speed_lead = raw in (True, 1, b"1", "1")
+      except Exception:
+        pass
+      try:
+        raw = params.get("DogPilotCurveBoost", return_default=True)
+        if raw is not None and raw != b"" and raw != "":
+          self.dp_curve_boost = float(clip(
+            float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw), 1.0, _DP_BOOST_MAX))
       except Exception:
         pass
       # BluePilot: angle-mode lane centering trim (advanced lane positioning) params.
@@ -541,6 +560,13 @@ class LateralAngleExt:
     self.curvature_factor = interp(abs(kappa_cmd), [0.0007, 0.001], [self.low_gain_calc, self.high_gain_calc])
 
     path_angle_calc = kappa_cmd * v_ego * self.curvature_factor
+    # DogPilot: high-demand boost (see _DP_BOOST_*)
+    self.bp_dp_boost = 1.0
+    if self.dp_curve_boost > 1.0:
+      _a_req = abs(kappa_cmd) * v_ego * v_ego
+      _boost_share = float(interp(_a_req, _DP_BOOST_ACCEL, [0.0, 1.0])) * float(interp(v_ego, _DP_BOOST_SPEEDS_MS, [0.0, 1.0]))
+      self.bp_dp_boost = 1.0 + (self.dp_curve_boost - 1.0) * _boost_share
+      path_angle_calc *= self.bp_dp_boost
     path_angle = path_angle_calc
 
 

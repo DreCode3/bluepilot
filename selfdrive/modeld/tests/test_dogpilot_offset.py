@@ -80,18 +80,26 @@ class TestDogPilotCurveCentering(unittest.TestCase):
     left, right = lanes(0.002)
     self.assertEqual(DPCurveCentering(ModelConstants.X_IDXS).target_for(left, right, 0.3, 0.9, 30.0, 1.0), 0.0)
 
+  def test_fades_out_in_very_tight_curves(self):
+    v = 30.0
+    full = self.settle(DPCurveCentering(ModelConstants.X_IDXS), 1.7 / v ** 2, v)
+    half = self.settle(DPCurveCentering(ModelConstants.X_IDXS), 2.15 / v ** 2, v)
+    self.assertGreater(full, 0.25)
+    self.assertAlmostEqual(half, 0.5 * min(DP_CURVE_MAX_M, 0.2 * (2.15 - 0.25)), places=3)
+    self.assertEqual(self.settle(DPCurveCentering(ModelConstants.X_IDXS), 2.6 / v ** 2, v), 0.0)
+
   def test_cap_and_rate(self):
     cc = DPCurveCentering(ModelConstants.X_IDXS)
-    self.assertAlmostEqual(self.settle(cc, 0.01, 30.0, strength=2.0), DP_CURVE_MAX_M, places=6)
+    self.assertAlmostEqual(self.settle(cc, 1.79 / 30.0 ** 2, 30.0, strength=2.0), DP_CURVE_MAX_M, places=6)
     cc = DPCurveCentering(ModelConstants.X_IDXS)
-    left, right = lanes(0.01)
+    left, right = lanes(1.79 / 30.0 ** 2)
     prev = 0.0
     for _ in range(100):
       off = cc.update(left, right, 0.9, 0.9, 30.0, 2.0, True)
       self.assertLessEqual(abs(off - prev), DP_CURVE_RATE_MS * cc.dt + 1e-12)
       prev = off
     # disengaging returns to 0 at the same rate
-    self.assertEqual(self.settle(cc, 0.01, 30.0, active=False, s=5.0), 0.0)
+    self.assertEqual(self.settle(cc, 1.79 / 30.0 ** 2, 30.0, active=False, s=5.0), 0.0)
 
 
 if __name__ == "__main__":

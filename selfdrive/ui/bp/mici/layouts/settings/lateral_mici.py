@@ -23,6 +23,9 @@ class LateralLayoutMici(NavScroller):
     self.dp_curve_centering = BigParamFloatControl(
       "DogPilot: Curve Centering (0 = off)", "DogPilotCurveCentering", min=0.0, max=2.0, step=0.25,
     )
+    self.dp_curve_boost = BigParamFloatControl(
+      "DogPilot: Tight-Curve Boost (1.0 = off)", "DogPilotCurveBoost", min=1.0, max=1.5, step=0.05,
+    )
 
     # --- Angle-mode-only items ---
     self.low_speed_factor = BigParamFloatControl(
@@ -93,6 +96,7 @@ class LateralLayoutMici(NavScroller):
       self.dp_low_speed_lead,
       self.dp_camera_offset,
       self.dp_curve_centering,
+      self.dp_curve_boost,
       self.low_speed_factor,
       self.high_speed_factor,
       self.high_speed_dampening,

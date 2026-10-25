@@ -310,6 +310,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"FordLowSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"DogPilotLowSpeedLead", {PERSISTENT | BACKUP, BOOL, "1"}},  // DogPilot: low-speed curve anticipation (lateral_angle_ext.py)
     {"DogPilotCurveCentering", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // DogPilot: curve-centering strength, 0 = off (modeld)
+    {"DogPilotCurveBoost", {PERSISTENT | BACKUP, FLOAT, "1.0"}},  // DogPilot: high-demand path-angle boost, 1.0 = off (lateral_angle_ext.py)
     {"FordHighSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordHighSpeedDampening_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"BPLateralSchemeParamsMigratedV1", {PERSISTENT | BACKUP, STRING, "0"}},

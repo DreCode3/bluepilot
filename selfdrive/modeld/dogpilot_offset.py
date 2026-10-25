@@ -26,6 +26,9 @@ DP_CURVE_MAX_M = 0.35                   # hard cap on the curve shift, any stren
 DP_CURVE_RATE_MS = 0.20                 # max change of the shift, m per second
 DP_CURVE_TAU_S = 0.30                   # smoothing of the target
 DP_CURVE_V_MIN, DP_CURVE_V_FULL = 9.0, 13.0  # m/s: off below ~20 mph, full above ~29 mph
+# Fade the shift out in very tight curves: there the car runs short of steering (it delivers 0.65-0.85 of
+# what it's sent above ~2 m/s^2), and the model's inside line needs less steering than the centre line.
+DP_CURVE_FADE_MS2 = (1.8, 2.5)
 
 
 def dp_lane_curvature(left_y, right_y, x_idxs):
@@ -56,7 +59,8 @@ class DPCurveCentering:
     k = float(self._k_row @ ((left_y[idx] + right_y[idx]) / 2.0))
     a_lat = abs(k) * v_ego * v_ego
     fade = min(max((v_ego - DP_CURVE_V_MIN) / (DP_CURVE_V_FULL - DP_CURVE_V_MIN), 0.0), 1.0)
-    shift = min(DP_CURVE_MAX_M, strength * DP_CURVE_M_PER_MS2 * max(a_lat - DP_CURVE_DEADBAND_MS2, 0.0)) * fade
+    tight = min(max((a_lat - DP_CURVE_FADE_MS2[0]) / (DP_CURVE_FADE_MS2[1] - DP_CURVE_FADE_MS2[0]), 0.0), 1.0)
+    shift = min(DP_CURVE_MAX_M, strength * DP_CURVE_M_PER_MS2 * max(a_lat - DP_CURVE_DEADBAND_MS2, 0.0)) * fade * (1.0 - tight)
     # right curve (k > 0): inside is right, so move the car left (+)
     return shift if k > 0 else -shift
 

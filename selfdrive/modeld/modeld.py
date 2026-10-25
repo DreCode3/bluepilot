@@ -288,7 +288,7 @@ def main(demo=False):
         dp_curve_strength = max(0.0, min(2.0, dp_settings[2]))
         if dp_settings != dp_settings_last:
           cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1],
-                         curve_centering=dp_settings[2])
+                         curve_centering=dp_settings[2], curve_fade=True)
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
