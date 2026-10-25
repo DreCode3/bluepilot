@@ -134,6 +134,29 @@ class TestDogPilotCurveCenteringFadeHold(unittest.TestCase):
     self.assertAlmostEqual(cc.offset, 0.2 * (1.2 - 0.25), places=2)
 
 
+class TestDogPilotCurveCenteringLaneChangeHold(unittest.TestCase):
+  def test_shift_holds_during_a_lane_change_then_resumes(self):
+    v = 30.0
+    cc = DPCurveCentering(ModelConstants.X_IDXS)
+    for _ in range(100):
+      cc.update(*lanes(1.3 / v ** 2), 0.9, 0.9, v, 1.0, True)
+    before = cc.offset
+    self.assertGreater(before, 0.15)
+    for _ in range(100):                      # 5 s lane change onto a straight: shift must not move
+      self.assertEqual(cc.update(*lanes(0.0), 0.9, 0.9, v, 1.0, True, hold=True), before)
+    after = [cc.update(*lanes(0.0), 0.9, 0.9, v, 1.0, True) for _ in range(40)]
+    self.assertLess(after[-1], before)          # releases normally once the lane change ends
+    self.assertLessEqual(before - after[0], DP_CURVE_RATE_MS * cc.dt + 1e-12)
+
+  def test_disengaging_still_releases_during_a_lane_change(self):
+    cc = DPCurveCentering(ModelConstants.X_IDXS)
+    for _ in range(100):
+      cc.update(*lanes(1.3 / 900.0), 0.9, 0.9, 30.0, 1.0, True)
+    before = cc.offset
+    cc.update(*lanes(0.0), 0.9, 0.9, 30.0, 1.0, False, hold=True)
+    self.assertLess(cc.offset, before)
+
+
 class TestDogPilotCurveCenteringEarly(unittest.TestCase):
   def test_off_by_default_and_identical_when_off(self):
     a, b = DPCurveCentering(ModelConstants.X_IDXS), DPCurveCentering(ModelConstants.X_IDXS)

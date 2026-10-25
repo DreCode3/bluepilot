@@ -290,7 +290,8 @@ def main(demo=False):
         dp_curve.early = dp_settings[3]
         if dp_settings != dp_settings_last:
           cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1],
-                         curve_centering=dp_settings[2], curve_fade=True, curve_early=dp_settings[3], curve_hold=True)
+                         curve_centering=dp_settings[2], curve_fade=True, curve_early=dp_settings[3], curve_hold=True,
+                         curve_lc_hold=True)
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
@@ -380,7 +381,7 @@ def main(demo=False):
       try:
         lines, probs = model_output['lane_lines'][0, :, :, 0], model_output['lane_lines_prob'][0, 1::2]
         dp_curve.update(lines[1], lines[2], float(probs[1]), float(probs[2]), v_ego, dp_curve_strength,
-                        sm['carControl'].latActive and DH.lane_change_state == LaneChangeState.off)
+                        sm['carControl'].latActive, hold=DH.lane_change_state != LaneChangeState.off)
       except Exception:
         cloudlog.exception("dogpilot: curve centering failed")
         dp_curve.offset = dp_curve.target = 0.0

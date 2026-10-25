@@ -16,6 +16,8 @@ from openpilot.system.hardware.tici.lpa import TiciLPA
 from openpilot.system.hardware.tici.pins import GPIO
 from openpilot.system.hardware.tici.amplifier import Amplifier
 
+DP_CPU_MAX_FREQ_KHZ = 2649600  # DogPilot: init.qcom.sh's value; the kernel clamps it to each policy's own maximum
+
 MODEM_STATE_PATH = "/dev/shm/modem"
 
 NetworkType = log.DeviceState.NetworkType
@@ -320,6 +322,13 @@ class Tici(HardwareBase):
       # Pre-sync (bp-sid-simple) never touched scaling_max_freq and ran fine through 3 years of 105F
       # Texas sun, because the kernel thermal framework throttles max freq REACTIVELY by temperature.
       # Leave frequency management to that native framework. If re-merging comma's cap, drop it here.
+      # DogPilot: but AGNOS itself still applies that cap at boot: comma.sh writes 1689600 and
+      # init.qcom.sh writes 2649600 to scaling_max_freq, and whichever service finishes last wins. On a
+      # 1.69 GHz boot, card + selfdrived + controlsd saturate CPU 4 (99%) -> selfdrivedLagging / commIssue,
+      # and engagement is refused. So when going onroad, restore init.qcom.sh's value once. This sets only
+      # the user limit; the kernel's thermal cooling devices still throttle below it by temperature.
+      if not powersave_enabled:
+        sudo_write(str(DP_CPU_MAX_FREQ_KHZ), f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_max_freq')
 
     # *** IRQ config ***
 

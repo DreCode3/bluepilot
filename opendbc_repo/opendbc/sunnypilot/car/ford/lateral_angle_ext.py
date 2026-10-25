@@ -178,7 +178,7 @@ class LateralAngleExt:
     # Max extra VLT above t_base; from ``FordVLTExtraMax`` param
     self.vlt_extra_max = _VLT_T_EXTRA_MAX
     # DogPilot: low-speed curve anticipation (see _DP_LEAD_*); ``DogPilotLowSpeedLead`` param
-    self.dp_low_speed_lead = True
+    self.dp_low_speed_lead = False
     # DogPilot: high-demand boost max multiplier (see _DP_BOOST_*); ``DogPilotCurveBoost`` param, 1.0 = off
     self.dp_curve_boost = 1.0
     self.bp_dp_boost = 1.0

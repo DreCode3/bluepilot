@@ -102,7 +102,11 @@ class DPCurveCentering:
     # right curve (k > 0): inside is right, so move the car left (+)
     return shift if k > 0 else -shift
 
-  def update(self, left_y, right_y, left_prob, right_prob, v_ego, strength, active):
+  def update(self, left_y, right_y, left_prob, right_prob, v_ego, strength, active, hold=False):
+    """hold: keep the current shift unchanged (during a lane change). The model reacts to the shift moving
+    (~1 m/s^2 of steering per m/s of shift change), so releasing it mid lane change nudged the lane change."""
+    if hold and active:
+      return self.offset
     k = self._curvature(left_y, right_y, left_prob, right_prob) if active else None
     a_lat = abs(k) * v_ego * v_ego if k is not None else 0.0
     tight_now = self._tight(a_lat)

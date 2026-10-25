@@ -2,7 +2,7 @@
 #
 # Contract: identical to stock BluePilot at and above 55 mph and below 12 mph; between them, looks further
 # ahead and weights the model's predicted curvature more, so a curve the model sees coming is commanded
-# earlier. The param turns it off; a missing param means on.
+# earlier. Off by default (param DogPilotLowSpeedLead, missing = off).
 
 import unittest
 
@@ -64,9 +64,11 @@ class TestDogPilotLowSpeedLead(unittest.TestCase):
     _, out_off = _step(False, v)
     self.assertEqual(out_param.path_angle, out_off.path_angle)
 
-  def test_missing_param_means_on(self):
-    ext, _ = _step(True, 30.0 * MPH, params={})
-    self.assertTrue(ext.dp_low_speed_lead)
+  def test_off_by_default(self):
+    ext = _Harness(_explorer_cp())
+    self.assertFalse(ext.dp_low_speed_lead)
+    ext.update_angle_params(_FakeParams({}))
+    self.assertFalse(ext.dp_low_speed_lead)
 
 
 if __name__ == "__main__":
