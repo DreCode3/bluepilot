@@ -28,8 +28,10 @@ from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, 
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.common.transformations.model import medmodel_intrinsics, sbigmodel_intrinsics
-from openpilot.selfdrive.modeld.dogpilot_offset import dp_shift_model_warp
+from openpilot.selfdrive.modeld.dogpilot_offset import DPCurveCentering, dp_shift_model_warp
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
+
+LaneChangeState = log.LaneChangeState
 
 
 PROCESS_NAME = "selfdrive.modeld.modeld"
@@ -202,9 +204,15 @@ def main(demo=False):
   params = Params()
   # DogPilot: CameraOffset param (virtual lateral shift, + = left) for the stock runner, see dp_shift_model_warp.
   # Any failure falls back to the unshifted warp. Setting changes are logged so drives can be split by them.
+  # DogPilotCurveCentering (strength, 0 = off) adds a shift toward the outside of curves, see DPCurveCentering.
   dp_offset_target = 0.0
   dp_offset = 0.0
+  dp_curve_strength = 0.0
+  dp_curve = DPCurveCentering(ModelConstants.X_IDXS, DT_MDL)
+  dp_height = 1.22
   dp_settings_last = None
+  base_transform_main = np.zeros((3, 3), dtype=np.float32)
+  base_transform_extra = np.zeros((3, 3), dtype=np.float32)
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -274,10 +282,13 @@ def main(demo=False):
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
       try:
         dp_settings = (float(params.get("CameraOffset", return_default=True) or 0.0),
-                       bool(params.get_bool("DogPilotLowSpeedLead")))
+                       bool(params.get_bool("DogPilotLowSpeedLead")),
+                       float(params.get("DogPilotCurveCentering", return_default=True) or 0.0))
         dp_offset_target = max(-0.35, min(0.35, dp_settings[0]))
+        dp_curve_strength = max(0.0, min(2.0, dp_settings[2]))
         if dp_settings != dp_settings_last:
-          cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1])
+          cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1],
+                         curve_centering=dp_settings[2])
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
@@ -285,19 +296,24 @@ def main(demo=False):
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
-      model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
-      model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
+      base_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
+      base_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
+      calib = sm["liveCalibration"]
+      dp_height = calib.height[0] if len(calib.height) else 1.22
+      live_calib_seen = True
+
+    # DogPilot: apply the static offset (eased, ~2 s) plus the curve-centering shift to the warp every frame
+    model_transform_main, model_transform_extra = base_transform_main, base_transform_extra
+    if live_calib_seen:
       try:
-        dp_offset = 0.9 * dp_offset + 0.1 * dp_offset_target  # ease in over a few calibration updates
-        if abs(dp_offset) > 1e-4:
-          calib = sm["liveCalibration"]
-          height = calib.height[0] if len(calib.height) else 1.22
-          shifted_main = dp_shift_model_warp(model_transform_main, medmodel_intrinsics, height, dp_offset)
-          shifted_extra = dp_shift_model_warp(model_transform_extra, sbigmodel_intrinsics, height, dp_offset)
+        dp_offset += 0.025 * (dp_offset_target - dp_offset)
+        dp_total = dp_offset + dp_curve.offset
+        if abs(dp_total) > 1e-4:
+          shifted_main = dp_shift_model_warp(base_transform_main, medmodel_intrinsics, dp_height, dp_total)
+          shifted_extra = dp_shift_model_warp(base_transform_extra, sbigmodel_intrinsics, dp_height, dp_total)
           model_transform_main, model_transform_extra = shifted_main, shifted_extra
       except Exception:
         cloudlog.exception("dogpilot: camera offset failed, using unshifted warp")
-      live_calib_seen = True
 
     traffic_convention = np.zeros(2)
     traffic_convention[int(is_rhd)] = 1
@@ -358,6 +374,14 @@ def main(demo=False):
       mdv2sp_send.modelDataV2SP.laneTurnDirection = DH.lane_turn_direction
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
+
+      try:
+        lines, probs = model_output['lane_lines'][0, :, :, 0], model_output['lane_lines_prob'][0, 1::2]
+        dp_curve.update(lines[1], lines[2], float(probs[1]), float(probs[2]), v_ego, dp_curve_strength,
+                        sm['carControl'].latActive and DH.lane_change_state == LaneChangeState.off)
+      except Exception:
+        cloudlog.exception("dogpilot: curve centering failed")
+        dp_curve.offset = dp_curve.target = 0.0
 
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
       pm.send('modelV2', modelv2_send)
