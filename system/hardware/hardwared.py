@@ -174,6 +174,60 @@ class DPThermalCache:
       return dict(self.values)
 
 
+class DPDeviceStateKeepAlive:
+  """DogPilot: keep deviceState flowing while hardware_thread is stuck in a slow sysfs read.
+
+  On the road every sysfs hardware read (thermal zones, power draw, ...) occasionally blocks for 5-20 s
+  at once. hardware_thread does several per loop, so deviceState stopped and selfdrived raised commIssue
+  ("TAKE CONTROL IMMEDIATELY"). If no real deviceState has gone out for KEEPALIVE_AFTER_S, this republishes
+  the last one at the normal 2 Hz, for at most KEEPALIVE_MAX_S per stall, so a hardwared that is really
+  dead still triggers the usual alert. Each stall is logged with its length."""
+  KEEPALIVE_AFTER_S = 0.75
+  KEEPALIVE_MAX_S = 30.0
+
+  def __init__(self, pm):
+    self.pm = pm
+    self.lock = threading.Lock()
+    self.last_bytes = None
+    self.last_real = time.monotonic()
+    self.last_sent = self.last_real
+    self.repeats = 0
+
+  def send(self, msg):
+    dat = msg.to_bytes()
+    with self.lock:
+      self.pm.send("deviceState", dat)
+      now = time.monotonic()
+      if self.repeats:
+        cloudlog.warning(f"dogpilot: deviceState kept alive {self.repeats}x over a {now - self.last_real:.1f} s hardwared stall")
+        self.repeats = 0
+      self.last_bytes = dat
+      self.last_real = self.last_sent = now
+
+  def tick(self):
+    with self.lock:
+      now = time.monotonic()
+      stalled = now - self.last_real
+      if self.last_bytes is None or stalled < self.KEEPALIVE_AFTER_S or stalled > self.KEEPALIVE_MAX_S:
+        return False
+      if now - self.last_sent < DT_HW:
+        return False
+      msg = messaging.new_message('deviceState', valid=True)
+      msg.deviceState = messaging.log_from_bytes(self.last_bytes).deviceState
+      self.pm.send("deviceState", msg)
+      self.last_sent = now
+      self.repeats += 1
+      return True
+
+  def run(self, end_event):
+    while not end_event.is_set():
+      try:
+        self.tick()
+      except Exception:
+        cloudlog.exception("dogpilot: deviceState keep-alive failed")
+      end_event.wait(0.1)
+
+
 def hw_state_thread(end_event, hw_queue):
   """Handles non critical hardware state, and sends over queue"""
   count = 0
@@ -226,6 +280,8 @@ def hw_state_thread(end_event, hw_queue):
 
 def hardware_thread(end_event, hw_queue) -> None:
   pm = messaging.PubMaster(['deviceState'])
+  dp_keepalive = DPDeviceStateKeepAlive(pm)
+  threading.Thread(target=dp_keepalive.run, args=(end_event,), daemon=True).start()
   sm = messaging.SubMaster(["peripheralState", "gpsLocationExternal", "selfdriveState", "pandaStates"], poll="pandaStates")
 
   count = 0
@@ -491,7 +547,7 @@ def hardware_thread(end_event, hw_queue) -> None:
       msg.deviceState.lastAthenaPingTime = last_ping
 
     msg.deviceState.thermalStatus = thermal_status
-    pm.send("deviceState", msg)
+    dp_keepalive.send(msg)  # DogPilot: was pm.send("deviceState", msg); see DPDeviceStateKeepAlive
 
     # Log to statsd
     statlog.gauge("free_space_percent", msg.deviceState.freeSpacePercent)
