@@ -8,7 +8,8 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_f
 from openpilot.common.transformations.model import get_warp_matrix, medmodel_intrinsics, sbigmodel_intrinsics
 from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.selfdrive.modeld.dogpilot_offset import DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DPCurveCentering, dp_shift_model_warp
+from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DP_CURVE_RELEASE_MS, DPCurveCentering,
+                                                        dp_shift_model_warp)
 
 H = 1.40
 RPY = np.radians([0.0, 2.5, -2.9])  # a pitched, yawed mount, like the car this was written for
@@ -100,6 +101,78 @@ class TestDogPilotCurveCentering(unittest.TestCase):
       prev = off
     # disengaging returns to 0 at the same rate
     self.assertEqual(self.settle(cc, 1.79 / 30.0 ** 2, 30.0, active=False, s=5.0), 0.0)
+
+
+def lanes_curve_from(x0, k, half_width=1.8):
+  """Straight lane that starts curving (curvature k) at x0 metres ahead."""
+  x = np.array(ModelConstants.X_IDXS)
+  centre = np.where(x > x0, 0.5 * k * (x - x0) ** 2, 0.0)
+  return centre - half_width, centre + half_width
+
+
+class TestDogPilotCurveCenteringFadeHold(unittest.TestCase):
+  def test_holds_faded_through_the_ramp_pattern(self):
+    # Oct 25 ramp: lateral acceleration wobbling between ~2.0 and ~2.6 m/s^2 inside one long tight curve
+    v = 25.0
+    cc = DPCurveCentering(ModelConstants.X_IDXS)
+    for _ in range(40):
+      cc.update(*lanes(2.6 / v ** 2), 0.9, 0.9, v, 1.5, True)
+    offs = []
+    for _ in range(4):
+      for a in (2.0, 2.6):
+        for _ in range(30):
+          offs.append(cc.update(*lanes(a / v ** 2), 0.9, 0.9, v, 1.5, True))
+    self.assertLess(max(abs(o) for o in offs), 0.06)   # was jumping between ~0 and ~0.28 m
+
+  def test_returns_after_the_tight_curve(self):
+    v = 30.0
+    cc = DPCurveCentering(ModelConstants.X_IDXS)
+    for _ in range(40):
+      cc.update(*lanes(2.6 / v ** 2), 0.9, 0.9, v, 1.0, True)
+    for _ in range(200):                               # 10 s of an ordinary 1.2 m/s^2 curve
+      cc.update(*lanes(1.2 / v ** 2), 0.9, 0.9, v, 1.0, True)
+    self.assertAlmostEqual(cc.offset, 0.2 * (1.2 - 0.25), places=2)
+
+
+class TestDogPilotCurveCenteringEarly(unittest.TestCase):
+  def test_off_by_default_and_identical_when_off(self):
+    a, b = DPCurveCentering(ModelConstants.X_IDXS), DPCurveCentering(ModelConstants.X_IDXS)
+    self.assertFalse(a.early)
+    left, right = lanes(0.0015)
+    for _ in range(100):
+      self.assertEqual(a.update(left, right, 0.9, 0.9, 30.0, 1.0, True), b.update(left, right, 0.9, 0.9, 30.0, 1.0, True))
+
+  def test_sees_the_curve_farther_ahead(self):
+    left, right = lanes_curve_from(40.0, 0.0015)   # curve starts 40 m ahead: invisible to the near fit
+    near, early = DPCurveCentering(ModelConstants.X_IDXS), DPCurveCentering(ModelConstants.X_IDXS)
+    early.early = True
+    self.assertAlmostEqual(near.target_for(left, right, 0.9, 0.9, 30.0, 1.0), 0.0, places=3)
+    self.assertGreater(early.target_for(left, right, 0.9, 0.9, 30.0, 1.0), 0.1)
+
+  def test_releases_slower_after_the_curve(self):
+    curve, straight = lanes(0.0015), lanes(0.0)
+    out = {}
+    for mode in (False, True):
+      cc = DPCurveCentering(ModelConstants.X_IDXS)
+      cc.early = mode
+      for _ in range(200):
+        cc.update(*curve, 0.9, 0.9, 30.0, 1.0, True)
+      peak = cc.offset
+      for _ in range(20):                          # 1 s of straight road
+        cc.update(*straight, 0.9, 0.9, 30.0, 1.0, True)
+      out[mode] = peak - cc.offset
+    self.assertLessEqual(out[True], DP_CURVE_RELEASE_MS * 1.0 + 1e-9)
+    self.assertGreater(out[False], 2 * out[True])
+
+  def test_reverses_at_full_rate(self):
+    cc = DPCurveCentering(ModelConstants.X_IDXS)
+    cc.early = True
+    for _ in range(200):
+      cc.update(*lanes(0.0015), 0.9, 0.9, 30.0, 1.0, True)
+    start = cc.offset
+    for _ in range(20):
+      cc.update(*lanes(-0.0015), 0.9, 0.9, 30.0, 1.0, True)
+    self.assertGreater(start - cc.offset, DP_CURVE_RELEASE_MS * 1.5)
 
 
 if __name__ == "__main__":

@@ -96,6 +96,14 @@ _DP_LEAD_BLEND = (0.50, 0.80, 0.80, 0.50)    # predicted-curvature weight (stock
 _DP_BOOST_ACCEL = (1.8, 2.5)                  # m/s^2 of requested lateral acceleration (|kappa_cmd| * v^2)
 _DP_BOOST_SPEEDS_MS = (40.0 * 0.44704, 50.0 * 0.44704)
 _DP_BOOST_MAX = 1.5
+# The boost level must not follow the request frame by frame: the request reacts to the car's motion, so in a
+# curve sitting in the 1.8-2.5 m/s^2 band it switched the boost on and off every ~3 s and the car swung ~0.9 m
+# across the lane (Oct 25 ramp). The level rises quickly, holds through dips while the curve is still under
+# way (request above _DP_BOOST_HOLD_ACCEL), and only falls fast once the request is low (the curve has ended).
+_DP_BOOST_RISE_PER_S = 2.0                    # level 0 -> 1 in 0.5 s
+_DP_BOOST_HOLD_ACCEL = 0.8                    # m/s^2: above this the curve is still under way
+_DP_BOOST_HOLD_FALL_PER_S = 0.15              # level fall while the curve is still under way
+_DP_BOOST_EXIT_FALL_PER_S = 1.5               # level fall once the request is below _DP_BOOST_HOLD_ACCEL
 
 # DogPilot: lane changes use stock BluePilot's low-speed gain (Low Speed Adjustment Factor capped at 1.0), so
 # the raised curve gain (1.30 x 1.5) doesn't make a 30 mph lane change overshoot and swing back. Eases in over
@@ -174,6 +182,7 @@ class LateralAngleExt:
     # DogPilot: high-demand boost max multiplier (see _DP_BOOST_*); ``DogPilotCurveBoost`` param, 1.0 = off
     self.dp_curve_boost = 1.0
     self.bp_dp_boost = 1.0
+    self.dp_boost_level = 0.0  # 0..1 share of the boost (see _DP_BOOST_*)
     self.dp_lc_weight = 0.0  # 1.0 = lane-change gain (see _DP_LC_*)
     # Telemetry: final path_angle (rad) after limits (see bp_card_publisher)
     self.bp_path_angle_final = 0.0
@@ -295,6 +304,8 @@ class LateralAngleExt:
     Blended κ is not passed through Ford c2 rate / DBC limits (those target the curvature actuator).
     """
     self._ensure_lateral_curv_initialized(CP)
+    if not CC.latActive:
+      self.dp_boost_level = 0.0  # DogPilot: boost hold restarts from zero on every engagement
 
     v_ego = float(CS.out.vEgoRaw)
     d_ref = pscm_d_ref_m(v_ego)
@@ -575,11 +586,18 @@ class LateralAngleExt:
     path_angle_calc = kappa_cmd * v_ego * self.curvature_factor
     # DogPilot: high-demand boost (see _DP_BOOST_*)
     self.bp_dp_boost = 1.0
-    if self.dp_curve_boost > 1.0:
+    if self.dp_curve_boost > 1.0 and not self.lane_change:
       _a_req = abs(kappa_cmd) * v_ego * v_ego
-      _boost_share = float(interp(_a_req, _DP_BOOST_ACCEL, [0.0, 1.0])) * float(interp(v_ego, _DP_BOOST_SPEEDS_MS, [0.0, 1.0]))
-      self.bp_dp_boost = 1.0 + (self.dp_curve_boost - 1.0) * _boost_share
+      _boost_target = float(interp(_a_req, _DP_BOOST_ACCEL, [0.0, 1.0])) * float(interp(v_ego, _DP_BOOST_SPEEDS_MS, [0.0, 1.0]))
+      if _boost_target >= self.dp_boost_level:
+        self.dp_boost_level = min(_boost_target, self.dp_boost_level + _DP_BOOST_RISE_PER_S * _STEER_DT)
+      else:
+        _fall = _DP_BOOST_HOLD_FALL_PER_S if _a_req > _DP_BOOST_HOLD_ACCEL else _DP_BOOST_EXIT_FALL_PER_S
+        self.dp_boost_level = max(_boost_target, self.dp_boost_level - _fall * _STEER_DT)
+      self.bp_dp_boost = 1.0 + (self.dp_curve_boost - 1.0) * self.dp_boost_level
       path_angle_calc *= self.bp_dp_boost
+    else:
+      self.dp_boost_level = 0.0
     path_angle = path_angle_calc
 
 

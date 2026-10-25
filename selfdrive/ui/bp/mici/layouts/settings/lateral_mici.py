@@ -21,7 +21,7 @@ class LateralLayoutMici(NavScroller):
       "DogPilot: Camera Offset (m, - moves right)", "CameraOffset", min=-0.35, max=0.35, step=0.01,
     )
     self.dp_curve_centering = BigParamFloatControl(
-      "DogPilot: Curve Centering (0 = off)", "DogPilotCurveCentering", min=0.0, max=2.0, step=0.25,
+      "DogPilot: Curve Centering (0 = off)", "DogPilotCurveCentering", min=0.0, max=2.0, step=0.1,
     )
     self.dp_curve_boost = BigParamFloatControl(
       "DogPilot: Tight-Curve Boost (1.0 = off)", "DogPilotCurveBoost", min=1.0, max=1.5, step=0.05,

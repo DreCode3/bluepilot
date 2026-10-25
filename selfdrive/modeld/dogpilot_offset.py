@@ -29,6 +29,20 @@ DP_CURVE_V_MIN, DP_CURVE_V_FULL = 9.0, 13.0  # m/s: off below ~20 mph, full abov
 # Fade the shift out in very tight curves: there the car runs short of steering (it delivers 0.65-0.85 of
 # what it's sent above ~2 m/s^2), and the model's inside line needs less steering than the centre line.
 DP_CURVE_FADE_MS2 = (1.8, 2.5)
+# The fade must not flicker: the measured curvature wobbles inside the 1.8-2.5 band and the model reacts to the
+# shift moving (Oct 25 ramp: shift jumped between -0.28 and 0 m every ~3 s). The fade rises quickly, holds while
+# the curve is still tight (above DP_CURVE_FADE_HOLD_MS2), and releases quickly once it has eased off.
+DP_CURVE_FADE_RISE_PER_S = 2.0
+DP_CURVE_FADE_HOLD_MS2 = 1.5
+DP_CURVE_FADE_HOLD_FALL_PER_S = 0.08
+DP_CURVE_FADE_FALL_PER_S = 1.0
+# Early mode (param DogPilotCurveEarly): on the highway the car moves inside within the first 2 s of a curve,
+# before the shift has built, and when the shift drops at the exit the model swings back toward its old line.
+# Early mode also measures the curve farther ahead (27-61 m, where the model's lane lines are still accurate to
+# a few cm) and uses whichever of near/far is curving harder, so the shift builds before the curve and holds
+# through it; and it releases the shift more slowly after the curve.
+DP_CURVE_X_IDX_FAR = (12, 14, 16, 18)   # x = 27, 36.75, 48, 60.75 m
+DP_CURVE_RELEASE_MS = 0.08              # early mode: release rate toward 0, m per second
 
 
 def dp_lane_curvature(left_y, right_y, x_idxs):
@@ -43,32 +57,67 @@ class DPCurveCentering:
   """Sideways shift (m, + = car moves left, like CameraOffset) toward the outside of the curve ahead."""
 
   def __init__(self, x_samples, dt=0.05):
-    xs = np.asarray(x_samples, dtype=np.float64)[list(DP_CURVE_X_IDX)]
-    a = np.stack([np.ones_like(xs), xs, xs * xs], axis=1)
-    self._k_row = 2.0 * np.linalg.pinv(a)[2]   # curvature = k_row . centre_y
+    self._k_row = self._fit_row(x_samples, DP_CURVE_X_IDX)        # curvature = k_row . centre_y
+    self._k_row_far = self._fit_row(x_samples, DP_CURVE_X_IDX_FAR)
     self.dt = dt
+    self.early = False
+    self.tight = 0.0          # held fade level, 0..1 (see DP_CURVE_FADE_*)
     self.target = 0.0
     self.offset = 0.0
 
-  def target_for(self, left_y, right_y, left_prob, right_prob, v_ego, strength):
+  @staticmethod
+  def _fit_row(x_samples, x_idx):
+    xs = np.asarray(x_samples, dtype=np.float64)[list(x_idx)]
+    a = np.stack([np.ones_like(xs), xs, xs * xs], axis=1)
+    return 2.0 * np.linalg.pinv(a)[2]
+
+  def _curvature(self, left_y, right_y, left_prob, right_prob):
+    """Lane-centre curvature ahead (1/m, + = right), or None when the lane lines aren't usable."""
     left_y, right_y = np.asarray(left_y), np.asarray(right_y)
     width = float(right_y[0] - left_y[0])
-    if strength <= 0.0 or left_prob < 0.5 or right_prob < 0.5 or not 2.6 < width < 4.6:
-      return 0.0
+    if left_prob < 0.5 or right_prob < 0.5 or not 2.6 < width < 4.6:
+      return None
     idx = list(DP_CURVE_X_IDX)
     k = float(self._k_row @ ((left_y[idx] + right_y[idx]) / 2.0))
+    if self.early:
+      far = list(DP_CURVE_X_IDX_FAR)
+      k_far = float(self._k_row_far @ ((left_y[far] + right_y[far]) / 2.0))
+      if abs(k_far) > abs(k):
+        k = k_far
+    return k
+
+  @staticmethod
+  def _tight(a_lat):
+    return min(max((a_lat - DP_CURVE_FADE_MS2[0]) / (DP_CURVE_FADE_MS2[1] - DP_CURVE_FADE_MS2[0]), 0.0), 1.0)
+
+  def target_for(self, left_y, right_y, left_prob, right_prob, v_ego, strength, tight=None):
+    """Shift for this frame. tight: held fade level (update() passes it); None = this frame's own."""
+    k = self._curvature(left_y, right_y, left_prob, right_prob)
+    if strength <= 0.0 or k is None:
+      return 0.0
     a_lat = abs(k) * v_ego * v_ego
     fade = min(max((v_ego - DP_CURVE_V_MIN) / (DP_CURVE_V_FULL - DP_CURVE_V_MIN), 0.0), 1.0)
-    tight = min(max((a_lat - DP_CURVE_FADE_MS2[0]) / (DP_CURVE_FADE_MS2[1] - DP_CURVE_FADE_MS2[0]), 0.0), 1.0)
+    tight = self._tight(a_lat) if tight is None else tight
     shift = min(DP_CURVE_MAX_M, strength * DP_CURVE_M_PER_MS2 * max(a_lat - DP_CURVE_DEADBAND_MS2, 0.0)) * fade * (1.0 - tight)
     # right curve (k > 0): inside is right, so move the car left (+)
     return shift if k > 0 else -shift
 
   def update(self, left_y, right_y, left_prob, right_prob, v_ego, strength, active):
-    raw = self.target_for(left_y, right_y, left_prob, right_prob, v_ego, strength) if active else 0.0
+    k = self._curvature(left_y, right_y, left_prob, right_prob) if active else None
+    a_lat = abs(k) * v_ego * v_ego if k is not None else 0.0
+    tight_now = self._tight(a_lat)
+    if tight_now >= self.tight:
+      self.tight = min(tight_now, self.tight + DP_CURVE_FADE_RISE_PER_S * self.dt)
+    else:
+      fall = DP_CURVE_FADE_HOLD_FALL_PER_S if a_lat > DP_CURVE_FADE_HOLD_MS2 else DP_CURVE_FADE_FALL_PER_S
+      self.tight = max(tight_now, self.tight - fall * self.dt)
+    raw = self.target_for(left_y, right_y, left_prob, right_prob, v_ego, strength, self.tight) if active else 0.0
     self.target += (raw - self.target) * min(1.0, self.dt / DP_CURVE_TAU_S)
     if raw == 0.0 and abs(self.target) < 1e-4:
       self.target = 0.0
     step = DP_CURVE_RATE_MS * self.dt
+    releasing = abs(self.target) < abs(self.offset) and self.target * self.offset >= 0.0
+    if self.early and releasing:
+      step = DP_CURVE_RELEASE_MS * self.dt
     self.offset += min(max(self.target - self.offset, -step), step)
     return self.offset

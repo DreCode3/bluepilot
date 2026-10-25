@@ -85,5 +85,46 @@ class TestDogPilotCurveBoost(unittest.TestCase):
       last = out.path_angle
 
 
+def _drive(ext, v, ks):
+  """Feed a sequence of requested curvatures (one per 20 Hz step); return bp_dp_boost after each."""
+  out = []
+  for k in ks:
+    ext.model = _model_steady(v, k)
+    ext.update_angle_strategy(_CC(latActive=True), _CS(vEgoRaw=v, vEgo=v, yawRate=-k * v), _Actuators(curvature=k), ext.CP)
+    out.append(ext.bp_dp_boost)
+  return out
+
+
+class TestDogPilotCurveBoostHold(unittest.TestCase):
+  def setUp(self):
+    self.v = 55 * MPH
+    self.ext = _Harness(_explorer_cp())
+    self.ext.human_turn_detector = _ForcedDetector(False)
+    self.ext.dp_low_speed_lead = False
+    self.ext.update_angle_params(_FakeParams({"DogPilotCurveBoost": b"1.3"}))
+    self.k = lambda a: -a / self.v ** 2       # left curve with lateral acceleration a
+
+  def test_rises_in_half_a_second(self):
+    b = _drive(self.ext, self.v, [self.k(2.8)] * 20)
+    self.assertLess(b[4], 1.2)                 # 0.25 s
+    self.assertAlmostEqual(b[11], 1.3, places=6)
+
+  def test_holds_through_the_ramp_pattern(self):
+    # Oct 25 ramp: request alternating ~2.7 and ~1.3 m/s^2 every ~1.5 s while the curve continued
+    b = _drive(self.ext, self.v, ([self.k(2.7)] * 30 + [self.k(1.3)] * 30) * 4)
+    self.assertGreater(min(b[30:]), 1.2)        # never drops back to ~1.0 during the dips
+    self.assertLess(max(b[30:]) - min(b[30:]), 0.1)
+
+  def test_releases_quickly_after_the_curve(self):
+    _drive(self.ext, self.v, [self.k(2.8)] * 40)
+    b = _drive(self.ext, self.v, [self.k(0.3)] * 20)
+    self.assertLess(b[-1], 1.0 + 1e-9 + 0.0)   # back to 1.0 within 1 s
+
+  def test_restarts_on_engagement(self):
+    _drive(self.ext, self.v, [self.k(2.8)] * 40)
+    self.ext.update_angle_strategy(_CC(latActive=False), _CS(vEgoRaw=self.v, vEgo=self.v), _Actuators(curvature=0.0), self.ext.CP)
+    self.assertEqual(self.ext.dp_boost_level, 0.0)
+
+
 if __name__ == "__main__":
   unittest.main()
