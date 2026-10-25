@@ -97,6 +97,11 @@ _DP_BOOST_ACCEL = (1.8, 2.5)                  # m/s^2 of requested lateral accel
 _DP_BOOST_SPEEDS_MS = (40.0 * 0.44704, 50.0 * 0.44704)
 _DP_BOOST_MAX = 1.5
 
+# DogPilot: lane changes use stock BluePilot's low-speed gain (Low Speed Adjustment Factor capped at 1.0), so
+# the raised curve gain (1.30 x 1.5) doesn't make a 30 mph lane change overshoot and swing back. Eases in over
+# 0.5 s when a lane change starts and back out over 1.5 s after it ends.
+_DP_LC_IN_S, _DP_LC_OUT_S = 0.5, 1.5
+
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.
 # t_lookup = t_base + t_extra_max × speed_factor(v) × kappa_factor(|κ|)
 # t_base = liveDelay.lateralDelay + DT_MDL — always matches the planner's pre-compensation floor.
@@ -169,6 +174,7 @@ class LateralAngleExt:
     # DogPilot: high-demand boost max multiplier (see _DP_BOOST_*); ``DogPilotCurveBoost`` param, 1.0 = off
     self.dp_curve_boost = 1.0
     self.bp_dp_boost = 1.0
+    self.dp_lc_weight = 0.0  # 1.0 = lane-change gain (see _DP_LC_*)
     # Telemetry: final path_angle (rad) after limits (see bp_card_publisher)
     self.bp_path_angle_final = 0.0
     # High-speed gain factors: set per-platform via carFingerprint in update_angle_params.
@@ -554,7 +560,14 @@ class LateralAngleExt:
     self.low_gain_calc = interp(
       v_ego, [13.5, 26.82], [1.0, (self.path_angle_gain_lowC_highV * self.user_dampening_factor)]
     )
-    self.high_gain_calc = interp(v_ego, [13.5, 26.82], [(1.30 * self.low_speed_curv_factor), (self.path_angle_gain_highC_highV * self.high_speed_curv_factor)])
+    # DogPilot: ease toward stock low-speed gain during lane changes (see _DP_LC_*)
+    if self.lane_change:
+      self.dp_lc_weight = min(1.0, self.dp_lc_weight + _STEER_DT / _DP_LC_IN_S)
+    else:
+      self.dp_lc_weight = max(0.0, self.dp_lc_weight - _STEER_DT / _DP_LC_OUT_S)
+    _low_factor = self.low_speed_curv_factor
+    _low_factor += (min(_low_factor, 1.0) - _low_factor) * self.dp_lc_weight
+    self.high_gain_calc = interp(v_ego, [13.5, 26.82], [(1.30 * _low_factor), (self.path_angle_gain_highC_highV * self.high_speed_curv_factor)])
 
     # As the curve gets bigger, we will need a little boost to the signal to to not understeer
     self.curvature_factor = interp(abs(kappa_cmd), [0.0007, 0.001], [self.low_gain_calc, self.high_gain_calc])

@@ -7,6 +7,7 @@ import struct
 import threading
 import time
 from collections import OrderedDict, namedtuple
+from dataclasses import fields
 
 import psutil
 
@@ -128,6 +129,51 @@ def _dp_timed(times, name, fn, *args):
     times[name] = round(time.monotonic() - t0, 3)
 
 
+class DPThermalCache:
+  """DogPilot: read the thermal zones on their own thread and let deviceState use the latest values.
+
+  A sysfs thermal read occasionally blocks for 6-8 s on the road. When that happened inside hardware_thread,
+  deviceState stopped and selfdrived raised commIssue ("TAKE CONTROL IMMEDIATELY"). Now a stuck read only
+  delays the temperatures; it is logged with the zone name once it returns."""
+
+  def __init__(self, thermal_config):
+    self.cfg = thermal_config
+    self.lock = threading.Lock()
+    self.values = self._read_all()
+
+  def _read_all(self):
+    ret, slow = {}, {}
+    for f in fields(self.cfg):
+      v = getattr(self.cfg, f.name)
+      if v is None:
+        continue
+      vals = []
+      for zone in (v if isinstance(v, list) else [v]):
+        t0 = time.monotonic()
+        vals.append(zone.read())
+        dt = time.monotonic() - t0
+        if dt > DP_SLOW_CALL_S:
+          slow[zone.name] = round(dt, 2)
+      ret[f.name + "TempC"] = vals if isinstance(v, list) else vals[0]
+    if slow:
+      cloudlog.warning(f"dogpilot: slow thermal read {slow}")
+    return ret
+
+  def run(self, end_event):
+    while not end_event.is_set():
+      try:
+        vals = self._read_all()
+        with self.lock:
+          self.values = vals
+      except Exception:
+        cloudlog.exception("dogpilot: thermal read failed")
+      end_event.wait(DT_HW)
+
+  def get(self):
+    with self.lock:
+      return dict(self.values)
+
+
 def hw_state_thread(end_event, hw_queue):
   """Handles non critical hardware state, and sends over queue"""
   count = 0
@@ -224,6 +270,8 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   HARDWARE.initialize_hardware()
   thermal_config = HARDWARE.get_thermal_config()
+  dp_thermal = DPThermalCache(thermal_config)
+  threading.Thread(target=dp_thermal.run, args=(end_event,), daemon=True).start()
 
   fan_controller = FanController(int(1./DT_HW))
 
@@ -268,7 +316,7 @@ def hardware_thread(end_event, hw_queue) -> None:
       continue
 
     msg = messaging.new_message('deviceState', valid=True)
-    msg.deviceState = thermal_config.get_msg()
+    msg.deviceState = dp_thermal.get()  # DogPilot: was thermal_config.get_msg(), which could block 6-8 s
     msg.deviceState.deviceType = HARDWARE.get_device_type()
 
     try:
