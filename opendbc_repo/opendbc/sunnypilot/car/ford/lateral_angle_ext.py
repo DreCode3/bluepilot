@@ -112,9 +112,10 @@ _DP_LC_IN_S, _DP_LC_OUT_S = 0.5, 1.5
 
 # DogPilot: mid-speed factor (param ``DogPilotMidSpeedFactor``, 0 = off). BluePilot blends one Low Speed Adjustment
 # Factor from 30 to 60 mph, so calming city steering (20-40 mph) also trimmed 45-60 mph curves. When set, the
-# blend above 40 mph is computed with this factor instead, handing over from the low-speed factor between 30 and
-# 40 mph. Like the low-speed factor it acts after the deviation clip, and lane changes cap it at 1.0 too.
-_DP_MID_HANDOVER_MS = (30.0 * 0.44704, 40.0 * 0.44704)
+# blend above 35 mph is computed with this factor instead, handing over from the low-speed factor between 25 and
+# 35 mph (30-40 left 30-35 mph curves on the low-speed gain). Like the low-speed factor it acts after the deviation
+# clip, and lane changes cap it at 1.0 too.
+_DP_MID_HANDOVER_MS = (25.0 * 0.44704, 35.0 * 0.44704)
 _DP_MID_RANGE = (0.5, 1.5)
 
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.

@@ -1,8 +1,8 @@
 # DogPilot: separate mid-speed factor (lateral_angle_ext _DP_MID_*, param DogPilotMidSpeedFactor, 0 = off).
 #
-# Contract: off (0 or missing) is identical to BluePilot. When set, below 30 mph nothing changes (the Low Speed
-# Adjustment Factor still rules); above 40 mph the gain is exactly what BluePilot gives with the low-speed factor set
-# to the mid-speed value; 30-40 mph hands over smoothly; 60 mph and up is unchanged; lane changes cap it at 1.0.
+# Contract: off (0 or missing) is identical to BluePilot. When set, up to 25 mph nothing changes (the Low Speed
+# Adjustment Factor still rules); above 35 mph the gain is exactly what BluePilot gives with the low-speed factor set
+# to the mid-speed value; 25-35 mph hands over smoothly; 60 mph and up is unchanged; lane changes cap it at 1.0.
 
 import unittest
 
@@ -35,20 +35,20 @@ class TestDogPilotMidSpeedFactor(unittest.TestCase):
       self.assertEqual(off, base, mph)
 
   def test_city_unchanged(self):
-    _, base = _pa(25 * MPH, 0.004, {"FordLowSpeedFactor_ang": b"1.25"})
-    _, mid = _pa(25 * MPH, 0.004, {"FordLowSpeedFactor_ang": b"1.25", "DogPilotMidSpeedFactor": b"1.5"})
+    _, base = _pa(20 * MPH, 0.004, {"FordLowSpeedFactor_ang": b"1.25"})
+    _, mid = _pa(20 * MPH, 0.004, {"FordLowSpeedFactor_ang": b"1.25", "DogPilotMidSpeedFactor": b"1.5"})
     self.assertEqual(mid, base)
 
-  def test_above_40_mph_matches_bluepilot_at_that_factor(self):
-    for mph in (45, 50, 55):
+  def test_above_35_mph_matches_bluepilot_at_that_factor(self):
+    for mph in (38, 45, 50, 55):
       _, want = _pa(mph * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.5"})
       _, got = _pa(mph * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.25", "DogPilotMidSpeedFactor": b"1.5"})
       self.assertAlmostEqual(got, want, places=9, msg=mph)
 
-  def test_hands_over_between_30_and_40_mph(self):
-    _, low = _pa(35 * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.25"})
-    _, high = _pa(35 * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.5"})
-    _, mid = _pa(35 * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.25", "DogPilotMidSpeedFactor": b"1.5"})
+  def test_hands_over_between_25_and_35_mph(self):
+    _, low = _pa(30 * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.25"})
+    _, high = _pa(30 * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.5"})
+    _, mid = _pa(30 * MPH, 0.002, {"FordLowSpeedFactor_ang": b"1.25", "DogPilotMidSpeedFactor": b"1.5"})
     self.assertGreater(mid, low)
     self.assertLess(mid, high)
 
