@@ -15,6 +15,23 @@ def dp_shift_model_warp(warp, model_intrinsics, height, offset):
   return (warp @ shear).astype(np.float32)
 
 
+# DogPilot: camera offset by speed (param DogPilotOffsetBySpeed, off; DogPilotCameraOffsetLow, m). With no offset the
+# car sits left at every speed, but more on the highway (-0.16 to -0.22 m at 60-90 mph) than in town (-0.08 to -0.11 m
+# at 20-60 mph), and a static offset moves it the full amount at every speed. So one value can't centre both: -0.15
+# left town straights 0.04-0.07 m right and, at 30-40 mph, pushed right curves 0.15 m further inside (inside +0.22 /
+# +0.27 m right / left with no offset; +0.37 / +0.09 with -0.15). With this on, CameraOffset applies from 65 mph and
+# DogPilotCameraOffsetLow up to 50 mph, blended in between (the left bias grows from ~60 mph).
+DP_OFFSET_BLEND_MS = (50.0 * 0.44704, 65.0 * 0.44704)
+
+
+def dp_offset_for_speed(high, low, by_speed, v_ego):
+  """Camera offset target (m, + = car moves left) for this speed."""
+  if not by_speed:
+    return high
+  w = min(max((v_ego - DP_OFFSET_BLEND_MS[0]) / (DP_OFFSET_BLEND_MS[1] - DP_OFFSET_BLEND_MS[0]), 0.0), 1.0)
+  return low + (high - low) * w
+
+
 # DogPilot: curve centering. In curves the driving model plans a line toward the inside of the curve, roughly
 # 0.3 m per m/s^2 of lateral acceleration, and the car follows it. Shifting the model's view toward the outside
 # (the same shift as CameraOffset) makes the model's own planner aim closer to the lane centre. Curvature comes

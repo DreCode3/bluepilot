@@ -28,7 +28,8 @@ from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, 
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.common.transformations.model import medmodel_intrinsics, sbigmodel_intrinsics
-from openpilot.selfdrive.modeld.dogpilot_offset import DP_CURVE_FADE_MS2, DPCurveCentering, DPGiveRoom, dp_shift_model_warp
+from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DPCurveCentering, DPGiveRoom, dp_offset_for_speed,
+                                                        dp_shift_model_warp)
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 
 LaneChangeState = log.LaneChangeState
@@ -211,6 +212,7 @@ def main(demo=False):
   dp_curve = DPCurveCentering(ModelConstants.X_IDXS, DT_MDL)
   dp_room = DPGiveRoom(DT_MDL)
   dp_room_amount = 0.0
+  dp_offset_high, dp_offset_low, dp_offset_by_speed = 0.0, 0.0, False
   dp_height = 1.22
   dp_settings_last = None
   base_transform_main = np.zeros((3, 3), dtype=np.float32)
@@ -291,8 +293,12 @@ def main(demo=False):
                        float(params.get("DogPilotMidSpeedFactor", return_default=True) or 0.0),
                        bool(params.get_bool("LagdToggle")), round(float(model.lat_delay), 2),
                        bool(params.get_bool("DogPilotPlanSmooth")),
-                       float(params.get("DogPilotGiveRoom", return_default=True) or 0.0))
-        dp_offset_target = max(-0.35, min(0.35, dp_settings[0]))
+                       float(params.get("DogPilotGiveRoom", return_default=True) or 0.0),
+                       bool(params.get_bool("DogPilotOffsetBySpeed")),
+                       float(params.get("DogPilotCameraOffsetLow", return_default=True) or 0.0))
+        dp_offset_high = max(-0.35, min(0.35, dp_settings[0]))
+        dp_offset_by_speed = dp_settings[10]
+        dp_offset_low = max(-0.35, min(0.35, dp_settings[11]))
         dp_curve_strength = max(0.0, min(2.0, dp_settings[2]))
         dp_curve.early = dp_settings[3]
         dp_curve.wide_cap = dp_settings[4]
@@ -302,7 +308,8 @@ def main(demo=False):
                          curve_centering=dp_settings[2], curve_fade=True, curve_early=dp_settings[3], curve_hold=True,
                          curve_lc_hold=True, curve_fade_from=DP_CURVE_FADE_MS2[0], curve_wide_cap=dp_settings[4],
                          mid_speed_factor=dp_settings[5], live_delay=dp_settings[6], lat_delay=dp_settings[7],
-                         plan_smooth=dp_settings[8], give_room=dp_settings[9])
+                         plan_smooth=dp_settings[8], give_room=dp_settings[9], offset_by_speed=dp_settings[10],
+                         offset_low=dp_settings[11])
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
@@ -320,6 +327,7 @@ def main(demo=False):
     model_transform_main, model_transform_extra = base_transform_main, base_transform_extra
     if live_calib_seen:
       try:
+        dp_offset_target = dp_offset_for_speed(dp_offset_high, dp_offset_low, dp_offset_by_speed, v_ego)
         dp_offset += 0.025 * (dp_offset_target - dp_offset)
         dp_total = dp_offset + dp_curve.offset + dp_room.offset
         if abs(dp_total) > 1e-4:

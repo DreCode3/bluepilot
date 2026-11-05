@@ -10,6 +10,7 @@ from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DP_CURVE_RELEASE_MS, DPCurveCentering,
                                                         DP_ROOM_HOLD_S, DP_ROOM_RISE_MS, DP_ROOM_TOTAL_M, DPGiveRoom,
+                                                        dp_offset_for_speed,
                                                         dp_shift_model_warp)
 
 H = 1.40
@@ -291,6 +292,19 @@ class TestDogPilotGiveRoom(unittest.TestCase):
   def test_lateral_off(self):
     _, out = _room([(True, False, 4.0)], active=False)
     self.assertTrue(np.all(out == 0.0))
+
+
+class TestDogPilotOffsetBySpeed(unittest.TestCase):
+  def test_off_is_static(self):
+    for mph in (10, 50, 57.5, 65, 80):
+      self.assertEqual(dp_offset_for_speed(-0.20, -0.05, False, mph * MPH), -0.20)
+
+  def test_schedule(self):
+    self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 0.0), -0.05)
+    self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 50 * MPH), -0.05)
+    self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 57.5 * MPH), -0.125)
+    self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 65 * MPH), -0.20)
+    self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 80 * MPH), -0.20)
 
 
 if __name__ == "__main__":
