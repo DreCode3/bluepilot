@@ -40,6 +40,7 @@ from opendbc.car.lateral import apply_std_steer_angle_limits
 from opendbc.car.ford.values import CAR, CarControllerParams
 from opendbc.sunnypilot.car.ford.lateral_curv_ext import LateralResult
 from opendbc.sunnypilot.car.ford.human_turn import HumanTurnDetector
+from opendbc.sunnypilot.car.ford.dogpilot_plan_smooth import DPPlanSmooth
 from opendbc.sunnypilot.car.ford.lane_center_trim import LaneCenterTrim
 from opendbc.sunnypilot.car.ford.values_ext import BP_ANGLE_LIMITS
 from selfdrive.modeld.constants import ModelConstants
@@ -190,6 +191,11 @@ class LateralAngleExt:
     # DogPilot: high-demand boost max multiplier (see _DP_BOOST_*); ``DogPilotCurveBoost`` param, 1.0 = off
     self.dp_curve_boost = 1.0
     self.dp_mid_speed_factor = 0.0  # DogPilot: 0 = off (see _DP_MID_*)
+    self.dp_plan_smooth = False  # DogPilot: highway plan smoothing (dogpilot_plan_smooth.py), ``DogPilotPlanSmooth``
+    self.dp_smoother = DPPlanSmooth(_STEER_DT)
+    self.dp_base_path_angle_last = 0.0  # unsmoothed path angle, for the plan-smoothing cap
+    self.dp_path_angle_sent = 0.0
+    self.bp_dp_smooth_gate = 0.0
     self.bp_dp_boost = 1.0
     self.dp_boost_level = 0.0  # 0..1 share of the boost (see _DP_BOOST_*)
     self.dp_lc_weight = 0.0  # 1.0 = lane-change gain (see _DP_LC_*)
@@ -289,6 +295,10 @@ class LateralAngleExt:
       except Exception:
         pass
       try:
+        self.dp_plan_smooth = bool(params.get_bool("DogPilotPlanSmooth"))
+      except Exception:
+        pass
+      try:
         raw = params.get("DogPilotCurveBoost", return_default=True)
         if raw is not None and raw != b"" and raw != "":
           self.dp_curve_boost = float(clip(
@@ -322,6 +332,7 @@ class LateralAngleExt:
     self._ensure_lateral_curv_initialized(CP)
     if not CC.latActive:
       self.dp_boost_level = 0.0  # DogPilot: boost hold restarts from zero on every engagement
+      self.dp_smoother.play_y = None
 
     v_ego = float(CS.out.vEgoRaw)
     d_ref = pscm_d_ref_m(v_ego)
@@ -535,6 +546,23 @@ class LateralAngleExt:
     else:
       self.lane_change = False
 
+    # DogPilot: highway plan smoothing (see dogpilot_plan_smooth.py). Same blend, from the smoothed request and plan;
+    # every decision above (lookup time, exit blend) stays on the unsmoothed inputs. The change it makes to the path
+    # angle is capped below, against the path angle the unsmoothed request would have given.
+    self.bp_dp_smooth_gate = 0.0
+    _kappa_unsmoothed = None
+    if self.dp_plan_smooth and self.model is not None and len(self.model.orientationRate.z) == len(ModelConstants.T_IDXS):
+      _z = np.array(self.model.orientationRate.z)
+      _action_t = float(self.sm['liveDelay'].lateralDelay) + 1.5 * _DT_MDL
+      _desired_s, _z_s, _gate = self.dp_smoother.update(_z, desired_curvature, v_ego, _action_t,
+                                                        bool(CC.latActive), self.lane_change)
+      if _gate > 0.0:
+        _pred_s = float(interp(curvature_lookup_time, ModelConstants.T_IDXS, _z_s / max(0.01, v_ego)))
+        _requested_s = _pred_s * b_blend + _desired_s * (1.0 - b_blend)
+        _kappa_unsmoothed = requested_curvature
+        requested_curvature = _requested_s
+        self.bp_dp_smooth_gate = _gate
+
     lane_change_factor = interp(
       v_ego, self.lane_change_factor_bp, [self.lane_change_factor_low, self.lane_change_factor_high_ang]
     )
@@ -559,6 +587,8 @@ class LateralAngleExt:
       kappa_cmd, self.model, v_ego, self.enable_lane_positioning_ang,
       self.custom_path_offset_ang, self.lane_centering_strength_ang,
       CC.latActive, self.lane_change)
+    if _kappa_unsmoothed is not None:  # DogPilot: the same trim on the unsmoothed request
+      _kappa_unsmoothed += kappa_cmd - float(requested_curvature)
 
     # BluePilot: clip kappa_cmd to current_curvature (measured, from yaw rate) +- CURVATURE_ERROR,
     # mirroring lateral_curv_ext.py's apply_ford_curvature_limits_ext exactly (same formula, same
@@ -571,6 +601,9 @@ class LateralAngleExt:
     # than only clipping the value reported to panda (which would make the check a no-op).
     current_curvature = self.get_current_curvature(CS)
     self.bp_curvature_deviation_limited = False
+    if v_ego > 9 and _kappa_unsmoothed is not None:
+      _kappa_unsmoothed = float(clip(_kappa_unsmoothed, current_curvature - CarControllerParams.CURVATURE_ERROR,
+                                     current_curvature + CarControllerParams.CURVATURE_ERROR))
     if v_ego > 9:
       _kappa_cmd_pre_error_clip = kappa_cmd
       kappa_cmd = float(clip(kappa_cmd, current_curvature - CarControllerParams.CURVATURE_ERROR,
@@ -610,7 +643,7 @@ class LateralAngleExt:
     # DogPilot: high-demand boost (see _DP_BOOST_*)
     self.bp_dp_boost = 1.0
     if self.dp_curve_boost > 1.0 and not self.lane_change:
-      _a_req = abs(kappa_cmd) * v_ego * v_ego
+      _a_req = abs(kappa_cmd if _kappa_unsmoothed is None else _kappa_unsmoothed) * v_ego * v_ego  # DogPilot: boost from the unsmoothed request
       _boost_target = float(interp(_a_req, _DP_BOOST_ACCEL, [0.0, 1.0])) * float(interp(v_ego, _DP_BOOST_SPEEDS_MS, [0.0, 1.0]))
       if _boost_target >= self.dp_boost_level:
         self.dp_boost_level = min(_boost_target, self.dp_boost_level + _DP_BOOST_RISE_PER_S * _STEER_DT)
@@ -661,6 +694,22 @@ class LateralAngleExt:
                             self.path_angle_last + _soft_roc))
     # BluePilot: did the soft ROC clip actually limit the path_angle we wanted to send this frame?
     self.bp_angle_rate_limited = bool(abs(path_angle - _path_angle_pre_roc) > 1e-9)
+
+    # DogPilot: cap plan smoothing's change (see dogpilot_plan_smooth.py) against the path angle the unsmoothed
+    # request would have given, run through the same gain, boost, CAN clamp and rate limit (its own last value).
+    if self.path_angle_last != self.dp_path_angle_sent:  # reset or overridden since: restart the shadow from it
+      self.dp_base_path_angle_last = self.path_angle_last
+    if _kappa_unsmoothed is not None:
+      _f = interp(abs(_kappa_unsmoothed), [0.0007, 0.001], [self.low_gain_calc, self.high_gain_calc])
+      _pa_base = _kappa_unsmoothed * v_ego * _f * self.bp_dp_boost
+      _pa_base = min(FORD_DBC_PATH_ANGLE_MAX, max(FORD_DBC_PATH_ANGLE_MIN, _pa_base))
+      _pa_base = float(clip(_pa_base, self.dp_base_path_angle_last - _soft_roc, self.dp_base_path_angle_last + _soft_roc))
+      self.dp_base_path_angle_last = _pa_base
+      path_angle = float(clip(DPPlanSmooth.cap(_pa_base, path_angle, v_ego),
+                              self.path_angle_last - _soft_roc, self.path_angle_last + _soft_roc))
+    else:
+      self.dp_base_path_angle_last = path_angle
+    self.dp_path_angle_sent = path_angle
 
 
     # c0 always zero -- no centering trim in angle mode.
