@@ -147,3 +147,48 @@ class DPCurveCentering:
       step = DP_CURVE_RELEASE_MS * self.dt
     self.offset += min(max(self.target - self.offset, -step), step)
     return self.offset
+
+
+# DogPilot: give room (param DogPilotGiveRoom, m, 0 = off). The model only eases 0.03-0.13 m away from a vehicle
+# alongside (blind-spot sensors, Oct 23-Nov 5 straights), and 1-5% of the time sits 0.2 m+ closer to it. With this on,
+# while a blind-spot sensor sees a vehicle on one side only, the view shifts the set amount the other way (the same
+# shift as CameraOffset; the car moves 30-75% of a view shift). It builds at DP_ROOM_RISE_MS, holds DP_ROOM_HOLD_S after
+# the sensor clears (a car passing us is still beside our front for a second or two after it leaves the blind spot),
+# then eases back. Full from 45 mph, none below 35; frozen during lane changes (like curve centering), off when lateral
+# is off; vehicles on both sides cancel. The sum with the camera offset and curve shift stays within DP_ROOM_TOTAL_M.
+DP_ROOM_MAX_M = 0.30
+DP_ROOM_RISE_MS = 0.15
+DP_ROOM_FALL_MS = 0.08
+DP_ROOM_HOLD_S = 2.0
+DP_ROOM_V = (35.0 * 0.44704, 45.0 * 0.44704)
+DP_ROOM_TOTAL_M = 0.50
+
+
+class DPGiveRoom:
+  """Sideways shift (m, + = car moves left, like CameraOffset) away from a vehicle in the blind spot."""
+
+  def __init__(self, dt=0.05):
+    self.dt = dt
+    self.left_s = 0.0    # time left on the hold for a vehicle on the left
+    self.right_s = 0.0
+    self.offset = 0.0
+
+  def update(self, left_bsm, right_bsm, v_ego, amount, active, hold=False, other=0.0):
+    """other: the rest of the view shift this frame (camera offset + curve shift), for the total limit."""
+    self.left_s = DP_ROOM_HOLD_S if left_bsm else max(0.0, self.left_s - self.dt)
+    self.right_s = DP_ROOM_HOLD_S if right_bsm else max(0.0, self.right_s - self.dt)
+    if hold and active:
+      return self.offset
+    amount = min(max(amount, 0.0), DP_ROOM_MAX_M)
+    target = 0.0
+    if active and amount > 0.0 and (self.left_s > 0.0) != (self.right_s > 0.0):
+      fade = min(max((v_ego - DP_ROOM_V[0]) / (DP_ROOM_V[1] - DP_ROOM_V[0]), 0.0), 1.0)
+      target = (-amount if self.left_s > 0.0 else amount) * fade   # vehicle on the left: move right (-)
+      if target > 0.0:
+        target = max(0.0, min(target, DP_ROOM_TOTAL_M - other))
+      else:
+        target = min(0.0, max(target, -DP_ROOM_TOTAL_M - other))
+    growing = abs(target) > abs(self.offset) and target * self.offset >= 0.0
+    step = (DP_ROOM_RISE_MS if growing else DP_ROOM_FALL_MS) * self.dt
+    self.offset += min(max(target - self.offset, -step), step)
+    return self.offset

@@ -28,6 +28,10 @@ class LateralLayoutMici(NavScroller):
       "DogPilot: Mid-Speed Factor (0 = off)", "DogPilotMidSpeedFactor", min=0.0, max=1.5, step=0.05,
     )
     self.dp_live_delay = BigParamControlBP("DogPilot: Live Steer Delay (off = fixed)", "LagdToggle")
+    self.dp_plan_smooth = BigParamControlBP("DogPilot: Highway Smoothing", "DogPilotPlanSmooth")
+    self.dp_give_room = BigParamFloatControl(
+      "DogPilot: Give Room (m, 0 = off)", "DogPilotGiveRoom", min=0.0, max=0.30, step=0.05,
+    )
     self.dp_curve_boost = BigParamFloatControl(
       "DogPilot: Tight-Curve Boost (1.0 = off)", "DogPilotCurveBoost", min=1.0, max=1.5, step=0.05,
     )
@@ -105,6 +109,8 @@ class LateralLayoutMici(NavScroller):
       self.dp_curve_boost,
       self.dp_mid_speed_factor,
       self.dp_live_delay,
+      self.dp_plan_smooth,
+      self.dp_give_room,
       self.low_speed_factor,
       self.high_speed_factor,
       self.high_speed_dampening,
@@ -131,6 +137,7 @@ class LateralLayoutMici(NavScroller):
       ("DogPilotLowSpeedLead", self.dp_low_speed_lead),
       ("DogPilotCurveWideCap", self.dp_curve_wide_cap),
       ("LagdToggle", self.dp_live_delay),
+      ("DogPilotPlanSmooth", self.dp_plan_smooth),
       ("disable_BP_lat_UI", self.disable_BP_lat),
       ("BlinkerPauseLaneChange", self.disable_lane_change_under_speed),
       ("enable_human_turn_detection_curv", self.enable_human_turn_detection),

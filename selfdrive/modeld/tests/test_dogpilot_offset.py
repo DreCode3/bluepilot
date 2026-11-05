@@ -9,6 +9,7 @@ from openpilot.common.transformations.model import get_warp_matrix, medmodel_int
 from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DP_CURVE_RELEASE_MS, DPCurveCentering,
+                                                        DP_ROOM_HOLD_S, DP_ROOM_RISE_MS, DP_ROOM_TOTAL_M, DPGiveRoom,
                                                         dp_shift_model_warp)
 
 H = 1.40
@@ -233,6 +234,63 @@ class TestDogPilotCurveCenteringEarly(unittest.TestCase):
     for _ in range(20):
       cc.update(*lanes(-0.0015), 0.9, 0.9, 30.0, 1.0, True)
     self.assertGreater(start - cc.offset, DP_CURVE_RELEASE_MS * 1.5)
+
+
+MPH = 0.44704
+
+
+def _room(seq, amount=0.25, v=65 * MPH, active=True, hold=False, other=0.0, room=None):
+  """seq: list of (left, right, seconds). Returns the DPGiveRoom and the offsets every 0.05 s."""
+  room = room or DPGiveRoom(0.05)
+  out = []
+  for left, right, secs in seq:
+    for _ in range(int(round(secs / 0.05))):
+      out.append(room.update(left, right, v, amount, active, hold=hold, other=other))
+  return room, np.array(out)
+
+
+class TestDogPilotGiveRoom(unittest.TestCase):
+  def test_off(self):
+    _, out = _room([(True, False, 5.0)], amount=0.0)
+    self.assertTrue(np.all(out == 0.0))
+
+  def test_moves_away_from_each_side(self):
+    _, left = _room([(True, False, 4.0)])
+    _, right = _room([(False, True, 4.0)])
+    self.assertAlmostEqual(left[-1], -0.25)   # vehicle on the left: car moves right (-, like CameraOffset)
+    self.assertAlmostEqual(right[-1], 0.25)
+    self.assertLessEqual(np.abs(np.diff(left)).max(), DP_ROOM_RISE_MS * 0.05 + 1e-9)
+
+  def test_holds_then_eases_back(self):
+    _, out = _room([(True, False, 4.0), (False, False, DP_ROOM_HOLD_S - 0.1), (False, False, 6.0)])
+    n = int(round(4.0 / 0.05))
+    self.assertAlmostEqual(out[n + int(round((DP_ROOM_HOLD_S - 0.2) / 0.05))], -0.25)
+    self.assertEqual(out[-1], 0.0)
+
+  def test_both_sides_cancel(self):
+    _, out = _room([(True, True, 4.0)])
+    self.assertTrue(np.all(out == 0.0))
+
+  def test_low_speed_off(self):
+    _, out = _room([(True, False, 4.0)], v=34 * MPH)
+    self.assertTrue(np.all(out == 0.0))
+    _, out = _room([(True, False, 4.0)], v=40 * MPH)
+    self.assertAlmostEqual(out[-1], -0.125)
+
+  def test_frozen_in_lane_change(self):
+    room, _ = _room([(True, False, 4.0)])
+    _, out = _room([(False, False, 6.0)], hold=True, room=room)
+    self.assertTrue(np.all(out == -0.25))
+
+  def test_total_limit(self):
+    _, out = _room([(True, False, 4.0)], other=-0.35)
+    self.assertAlmostEqual(out[-1], -(DP_ROOM_TOTAL_M - 0.35))
+    _, out = _room([(True, False, 4.0)], other=-0.6)
+    self.assertEqual(out[-1], 0.0)
+
+  def test_lateral_off(self):
+    _, out = _room([(True, False, 4.0)], active=False)
+    self.assertTrue(np.all(out == 0.0))
 
 
 if __name__ == "__main__":
