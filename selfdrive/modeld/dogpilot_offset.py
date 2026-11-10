@@ -54,11 +54,6 @@ DP_CURVE_FADE_RISE_PER_S = 2.0
 DP_CURVE_FADE_HOLD_MS2 = 1.5
 DP_CURVE_FADE_HOLD_FALL_PER_S = 0.08
 DP_CURVE_FADE_FALL_PER_S = 1.0
-# Early mode (param DogPilotCurveEarly): on the highway the car moves inside within the first 2 s of a curve,
-# before the shift has built, and when the shift drops at the exit the model swings back toward its old line.
-# Early mode also measures the curve farther ahead (27-61 m, where the model's lane lines are still accurate to
-# a few cm) and uses whichever of near/far is curving harder, so the shift builds before the curve and holds
-# through it; and it releases the shift more slowly after the curve.
 # Wide-lane cap (param DogPilotCurveWideCap): in long moderate curves the shift sits at the 0.35 m cap and the car
 # can still drift 0.5-0.8 m in. With this on, the cap follows the lane width the model sees (line centre to line
 # centre; 3.26-3.40 m on Oct 25 interstates): half the room beside a 2.0 m-wide car, minus a 0.20 m margin, between
@@ -68,8 +63,6 @@ DP_CURVE_CAR_WIDTH_M = 2.0
 DP_CURVE_LINE_MARGIN_M = 0.20
 DP_CURVE_WIDE_CAP_RANGE = (0.20, 0.50)
 DP_CURVE_WIDTH_TAU_S = 1.0
-DP_CURVE_X_IDX_FAR = (12, 14, 16, 18)   # x = 27, 36.75, 48, 60.75 m
-DP_CURVE_RELEASE_MS = 0.08              # early mode: release rate toward 0, m per second
 
 
 def dp_lane_curvature(left_y, right_y, x_idxs):
@@ -85,9 +78,7 @@ class DPCurveCentering:
 
   def __init__(self, x_samples, dt=0.05):
     self._k_row = self._fit_row(x_samples, DP_CURVE_X_IDX)        # curvature = k_row . centre_y
-    self._k_row_far = self._fit_row(x_samples, DP_CURVE_X_IDX_FAR)
     self.dt = dt
-    self.early = False
     self.wide_cap = False
     self.width = None         # smoothed lane width (m) for the wide-lane cap
     self.tight = 0.0          # held fade level, 0..1 (see DP_CURVE_FADE_*)
@@ -108,11 +99,6 @@ class DPCurveCentering:
       return None
     idx = list(DP_CURVE_X_IDX)
     k = float(self._k_row @ ((left_y[idx] + right_y[idx]) / 2.0))
-    if self.early:
-      far = list(DP_CURVE_X_IDX_FAR)
-      k_far = float(self._k_row_far @ ((left_y[far] + right_y[far]) / 2.0))
-      if abs(k_far) > abs(k):
-        k = k_far
     return k
 
   @staticmethod
@@ -159,53 +145,5 @@ class DPCurveCentering:
     if raw == 0.0 and abs(self.target) < 1e-4:
       self.target = 0.0
     step = DP_CURVE_RATE_MS * self.dt
-    releasing = abs(self.target) < abs(self.offset) and self.target * self.offset >= 0.0
-    if self.early and releasing:
-      step = DP_CURVE_RELEASE_MS * self.dt
     self.offset += min(max(self.target - self.offset, -step), step)
-    return self.offset
-
-
-# DogPilot: give room (param DogPilotGiveRoom, m, 0 = off). The model only eases 0.03-0.13 m away from a vehicle
-# alongside (blind-spot sensors, Oct 23-Nov 5 straights), and 1-5% of the time sits 0.2 m+ closer to it. With this on,
-# while a blind-spot sensor sees a vehicle on one side only, the view shifts the set amount the other way (the same
-# shift as CameraOffset; the car moves 30-75% of a view shift). It builds at DP_ROOM_RISE_MS, holds DP_ROOM_HOLD_S after
-# the sensor clears (a car passing us is still beside our front for a second or two after it leaves the blind spot),
-# then eases back. Full from 45 mph, none below 35; frozen during lane changes (like curve centering), off when lateral
-# is off; vehicles on both sides cancel. The sum with the camera offset and curve shift stays within DP_ROOM_TOTAL_M.
-DP_ROOM_MAX_M = 0.30
-DP_ROOM_RISE_MS = 0.15
-DP_ROOM_FALL_MS = 0.08
-DP_ROOM_HOLD_S = 2.0
-DP_ROOM_V = (35.0 * 0.44704, 45.0 * 0.44704)
-DP_ROOM_TOTAL_M = 0.50
-
-
-class DPGiveRoom:
-  """Sideways shift (m, + = car moves left, like CameraOffset) away from a vehicle in the blind spot."""
-
-  def __init__(self, dt=0.05):
-    self.dt = dt
-    self.left_s = 0.0    # time left on the hold for a vehicle on the left
-    self.right_s = 0.0
-    self.offset = 0.0
-
-  def update(self, left_bsm, right_bsm, v_ego, amount, active, hold=False, other=0.0):
-    """other: the rest of the view shift this frame (camera offset + curve shift), for the total limit."""
-    self.left_s = DP_ROOM_HOLD_S if left_bsm else max(0.0, self.left_s - self.dt)
-    self.right_s = DP_ROOM_HOLD_S if right_bsm else max(0.0, self.right_s - self.dt)
-    if hold and active:
-      return self.offset
-    amount = min(max(amount, 0.0), DP_ROOM_MAX_M)
-    target = 0.0
-    if active and amount > 0.0 and (self.left_s > 0.0) != (self.right_s > 0.0):
-      fade = min(max((v_ego - DP_ROOM_V[0]) / (DP_ROOM_V[1] - DP_ROOM_V[0]), 0.0), 1.0)
-      target = (-amount if self.left_s > 0.0 else amount) * fade   # vehicle on the left: move right (-)
-      if target > 0.0:
-        target = max(0.0, min(target, DP_ROOM_TOTAL_M - other))
-      else:
-        target = min(0.0, max(target, -DP_ROOM_TOTAL_M - other))
-    growing = abs(target) > abs(self.offset) and target * self.offset >= 0.0
-    step = (DP_ROOM_RISE_MS if growing else DP_ROOM_FALL_MS) * self.dt
-    self.offset += min(max(target - self.offset, -step), step)
     return self.offset

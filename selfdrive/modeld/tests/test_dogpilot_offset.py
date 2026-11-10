@@ -8,10 +8,8 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_f
 from openpilot.common.transformations.model import get_warp_matrix, medmodel_intrinsics, sbigmodel_intrinsics
 from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DP_CURVE_RELEASE_MS, DPCurveCentering,
-                                                        DP_ROOM_HOLD_S, DP_ROOM_RISE_MS, DP_ROOM_TOTAL_M, DPGiveRoom,
-                                                        dp_offset_for_speed,
-                                                        dp_shift_model_warp)
+from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DPCurveCentering,
+                                                        dp_offset_for_speed, dp_shift_model_warp)
 
 H = 1.40
 RPY = np.radians([0.0, 2.5, -2.9])  # a pitched, yawed mount, like the car this was written for
@@ -112,13 +110,6 @@ class TestDogPilotCurveCentering(unittest.TestCase):
     self.assertEqual(self.settle(cc, 1.79 / 30.0 ** 2, 30.0, active=False, s=5.0), 0.0)
 
 
-def lanes_curve_from(x0, k, half_width=1.8):
-  """Straight lane that starts curving (curvature k) at x0 metres ahead."""
-  x = np.array(ModelConstants.X_IDXS)
-  centre = np.where(x > x0, 0.5 * k * (x - x0) ** 2, 0.0)
-  return centre - half_width, centre + half_width
-
-
 class TestDogPilotCurveCenteringFadeHold(unittest.TestCase):
   def test_holds_faded_through_the_ramp_pattern(self):
     # a curve wobbling in and out of the fade band (Oct 25 ramp pattern, shifted to the current band)
@@ -196,102 +187,7 @@ class TestDogPilotCurveCenteringWideCap(unittest.TestCase):
     self.assertLessEqual(self.settle(4.5, True), 0.50 + 1e-9)
 
 
-class TestDogPilotCurveCenteringEarly(unittest.TestCase):
-  def test_off_by_default_and_identical_when_off(self):
-    a, b = DPCurveCentering(ModelConstants.X_IDXS), DPCurveCentering(ModelConstants.X_IDXS)
-    self.assertFalse(a.early)
-    left, right = lanes(0.0015)
-    for _ in range(100):
-      self.assertEqual(a.update(left, right, 0.9, 0.9, 30.0, 1.0, True), b.update(left, right, 0.9, 0.9, 30.0, 1.0, True))
-
-  def test_sees_the_curve_farther_ahead(self):
-    left, right = lanes_curve_from(40.0, 0.0015)   # curve starts 40 m ahead: invisible to the near fit
-    near, early = DPCurveCentering(ModelConstants.X_IDXS), DPCurveCentering(ModelConstants.X_IDXS)
-    early.early = True
-    self.assertAlmostEqual(near.target_for(left, right, 0.9, 0.9, 30.0, 1.0), 0.0, places=3)
-    self.assertGreater(early.target_for(left, right, 0.9, 0.9, 30.0, 1.0), 0.1)
-
-  def test_releases_slower_after_the_curve(self):
-    curve, straight = lanes(0.0015), lanes(0.0)
-    out = {}
-    for mode in (False, True):
-      cc = DPCurveCentering(ModelConstants.X_IDXS)
-      cc.early = mode
-      for _ in range(200):
-        cc.update(*curve, 0.9, 0.9, 30.0, 1.0, True)
-      peak = cc.offset
-      for _ in range(20):                          # 1 s of straight road
-        cc.update(*straight, 0.9, 0.9, 30.0, 1.0, True)
-      out[mode] = peak - cc.offset
-    self.assertLessEqual(out[True], DP_CURVE_RELEASE_MS * 1.0 + 1e-9)
-    self.assertGreater(out[False], 2 * out[True])
-
-  def test_reverses_at_full_rate(self):
-    cc = DPCurveCentering(ModelConstants.X_IDXS)
-    cc.early = True
-    for _ in range(200):
-      cc.update(*lanes(0.0015), 0.9, 0.9, 30.0, 1.0, True)
-    start = cc.offset
-    for _ in range(20):
-      cc.update(*lanes(-0.0015), 0.9, 0.9, 30.0, 1.0, True)
-    self.assertGreater(start - cc.offset, DP_CURVE_RELEASE_MS * 1.5)
-
-
 MPH = 0.44704
-
-
-def _room(seq, amount=0.25, v=65 * MPH, active=True, hold=False, other=0.0, room=None):
-  """seq: list of (left, right, seconds). Returns the DPGiveRoom and the offsets every 0.05 s."""
-  room = room or DPGiveRoom(0.05)
-  out = []
-  for left, right, secs in seq:
-    for _ in range(int(round(secs / 0.05))):
-      out.append(room.update(left, right, v, amount, active, hold=hold, other=other))
-  return room, np.array(out)
-
-
-class TestDogPilotGiveRoom(unittest.TestCase):
-  def test_off(self):
-    _, out = _room([(True, False, 5.0)], amount=0.0)
-    self.assertTrue(np.all(out == 0.0))
-
-  def test_moves_away_from_each_side(self):
-    _, left = _room([(True, False, 4.0)])
-    _, right = _room([(False, True, 4.0)])
-    self.assertAlmostEqual(left[-1], -0.25)   # vehicle on the left: car moves right (-, like CameraOffset)
-    self.assertAlmostEqual(right[-1], 0.25)
-    self.assertLessEqual(np.abs(np.diff(left)).max(), DP_ROOM_RISE_MS * 0.05 + 1e-9)
-
-  def test_holds_then_eases_back(self):
-    _, out = _room([(True, False, 4.0), (False, False, DP_ROOM_HOLD_S - 0.1), (False, False, 6.0)])
-    n = int(round(4.0 / 0.05))
-    self.assertAlmostEqual(out[n + int(round((DP_ROOM_HOLD_S - 0.2) / 0.05))], -0.25)
-    self.assertEqual(out[-1], 0.0)
-
-  def test_both_sides_cancel(self):
-    _, out = _room([(True, True, 4.0)])
-    self.assertTrue(np.all(out == 0.0))
-
-  def test_low_speed_off(self):
-    _, out = _room([(True, False, 4.0)], v=34 * MPH)
-    self.assertTrue(np.all(out == 0.0))
-    _, out = _room([(True, False, 4.0)], v=40 * MPH)
-    self.assertAlmostEqual(out[-1], -0.125)
-
-  def test_frozen_in_lane_change(self):
-    room, _ = _room([(True, False, 4.0)])
-    _, out = _room([(False, False, 6.0)], hold=True, room=room)
-    self.assertTrue(np.all(out == -0.25))
-
-  def test_total_limit(self):
-    _, out = _room([(True, False, 4.0)], other=-0.35)
-    self.assertAlmostEqual(out[-1], -(DP_ROOM_TOTAL_M - 0.35))
-    _, out = _room([(True, False, 4.0)], other=-0.6)
-    self.assertEqual(out[-1], 0.0)
-
-  def test_lateral_off(self):
-    _, out = _room([(True, False, 4.0)], active=False)
-    self.assertTrue(np.all(out == 0.0))
 
 
 class TestDogPilotOffsetBySpeed(unittest.TestCase):

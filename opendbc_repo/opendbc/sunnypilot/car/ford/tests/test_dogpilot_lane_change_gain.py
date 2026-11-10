@@ -20,7 +20,6 @@ def _run(v, k, lane_change_states, low_factor=b"1.5", dogpilot=True):
       return _run(v, k, lane_change_states, low_factor)
   ext = _Harness(_explorer_cp())
   ext.human_turn_detector = _ForcedDetector(False)
-  ext.dp_low_speed_lead = False
   ext.update_angle_params(_FakeParams({"FordLowSpeedFactor_ang": low_factor}))
   outs = []
   for lcs in lane_change_states:

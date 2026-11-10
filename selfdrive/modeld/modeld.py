@@ -28,7 +28,7 @@ from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, 
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.common.transformations.model import medmodel_intrinsics, sbigmodel_intrinsics
-from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DPCurveCentering, DPGiveRoom, dp_offset_for_speed,
+from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DPCurveCentering, dp_offset_for_speed,
                                                         dp_shift_model_warp)
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 
@@ -210,8 +210,6 @@ def main(demo=False):
   dp_offset = 0.0
   dp_curve_strength = 0.0
   dp_curve = DPCurveCentering(ModelConstants.X_IDXS, DT_MDL)
-  dp_room = DPGiveRoom(DT_MDL)
-  dp_room_amount = 0.0
   dp_offset_high, dp_offset_low, dp_offset_by_speed = 0.0, 0.0, False
   dp_height = 1.22
   dp_settings_last = None
@@ -286,30 +284,25 @@ def main(demo=False):
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
       try:
         dp_settings = (float(params.get("CameraOffset", return_default=True) or 0.0),
-                       bool(params.get_bool("DogPilotLowSpeedLead")),
                        float(params.get("DogPilotCurveCentering", return_default=True) or 0.0),
-                       bool(params.get_bool("DogPilotCurveEarly")),
                        bool(params.get_bool("DogPilotCurveWideCap")),
                        float(params.get("DogPilotMidSpeedFactor", return_default=True) or 0.0),
                        bool(params.get_bool("LagdToggle")), round(float(model.lat_delay), 2),
-                       bool(params.get_bool("DogPilotPlanSmooth")),
-                       float(params.get("DogPilotGiveRoom", return_default=True) or 0.0),
                        bool(params.get_bool("DogPilotOffsetBySpeed")),
                        float(params.get("DogPilotCameraOffsetLow", return_default=True) or 0.0))
         dp_offset_high = max(-0.35, min(0.35, dp_settings[0]))
-        dp_offset_by_speed = dp_settings[10]
-        dp_offset_low = max(-0.35, min(0.35, dp_settings[11]))
-        dp_curve_strength = max(0.0, min(2.0, dp_settings[2]))
-        dp_curve.early = dp_settings[3]
-        dp_curve.wide_cap = dp_settings[4]
-        dp_room_amount = dp_settings[9]
+        dp_offset_by_speed = dp_settings[6]
+        dp_offset_low = max(-0.35, min(0.35, dp_settings[7]))
+        dp_curve_strength = max(0.0, min(2.0, dp_settings[1]))
+        dp_curve.wide_cap = dp_settings[2]
         if dp_settings != dp_settings_last:
-          cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=dp_settings[1],
-                         curve_centering=dp_settings[2], curve_fade=True, curve_early=dp_settings[3], curve_hold=True,
-                         curve_lc_hold=True, curve_fade_from=DP_CURVE_FADE_MS2[0], curve_wide_cap=dp_settings[4],
-                         mid_speed_factor=dp_settings[5], live_delay=dp_settings[6], lat_delay=dp_settings[7],
-                         plan_smooth=dp_settings[8], give_room=dp_settings[9], offset_by_speed=dp_settings[10],
-                         offset_low=dp_settings[11])
+          # low_speed_lead, curve_early, plan_smooth and give_room were removed; logged as off so log readers keep working
+          cloudlog.event("dogpilot_settings", camera_offset=dp_settings[0], low_speed_lead=False,
+                         curve_centering=dp_settings[1], curve_fade=True, curve_early=False, curve_hold=True,
+                         curve_lc_hold=True, curve_fade_from=DP_CURVE_FADE_MS2[0], curve_wide_cap=dp_settings[2],
+                         mid_speed_factor=dp_settings[3], live_delay=dp_settings[4], lat_delay=dp_settings[5],
+                         plan_smooth=False, give_room=0.0, offset_by_speed=dp_settings[6],
+                         offset_low=dp_settings[7])
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
@@ -329,7 +322,7 @@ def main(demo=False):
       try:
         dp_offset_target = dp_offset_for_speed(dp_offset_high, dp_offset_low, dp_offset_by_speed, v_ego)
         dp_offset += 0.025 * (dp_offset_target - dp_offset)
-        dp_total = dp_offset + dp_curve.offset + dp_room.offset
+        dp_total = dp_offset + dp_curve.offset
         if abs(dp_total) > 1e-4:
           shifted_main = dp_shift_model_warp(base_transform_main, medmodel_intrinsics, dp_height, dp_total)
           shifted_extra = dp_shift_model_warp(base_transform_extra, sbigmodel_intrinsics, dp_height, dp_total)
@@ -404,13 +397,6 @@ def main(demo=False):
       except Exception:
         cloudlog.exception("dogpilot: curve centering failed")
         dp_curve.offset = dp_curve.target = 0.0
-      try:
-        dp_room.update(bool(sm['carState'].leftBlindspot), bool(sm['carState'].rightBlindspot), v_ego, dp_room_amount,
-                       sm['carControl'].latActive, hold=DH.lane_change_state != LaneChangeState.off,
-                       other=dp_offset + dp_curve.offset)
-      except Exception:
-        cloudlog.exception("dogpilot: give room failed")
-        dp_room.offset = 0.0
 
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
       pm.send('modelV2', modelv2_send)

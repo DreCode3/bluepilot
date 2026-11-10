@@ -23,7 +23,6 @@ def _settle(boost, v, k, steps=60):
   """Hold a steady curve k at speed v (measured = requested) until the path-angle rate limit has settled."""
   ext = _Harness(_explorer_cp())
   ext.human_turn_detector = _ForcedDetector(False)
-  ext.dp_low_speed_lead = False
   params = {} if boost is None else {"DogPilotCurveBoost": str(boost).encode()}
   ext.update_angle_params(_FakeParams(params))
   ext.model = _model_steady(v, k)
@@ -74,7 +73,6 @@ class TestDogPilotCurveBoost(unittest.TestCase):
     v = 80 * MPH
     ext = _Harness(_explorer_cp())
     ext.human_turn_detector = _ForcedDetector(False)
-    ext.dp_low_speed_lead = False
     ext.update_angle_params(_FakeParams({"DogPilotCurveBoost": b"1.5"}))
     ext.model = _model_steady(v, 0.0022)
     last = 0.0
@@ -100,7 +98,6 @@ class TestDogPilotCurveBoostHold(unittest.TestCase):
     self.v = 55 * MPH
     self.ext = _Harness(_explorer_cp())
     self.ext.human_turn_detector = _ForcedDetector(False)
-    self.ext.dp_low_speed_lead = False
     self.ext.update_angle_params(_FakeParams({"DogPilotCurveBoost": b"1.3"}))
     self.k = lambda a: -a / self.v ** 2       # left curve with lateral acceleration a
 

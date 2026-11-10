@@ -16,7 +16,6 @@ class LateralLayoutMici(NavScroller):
       self.set_back_callback(back_callback)
 
     # --- DogPilot experiments (always visible) ---
-    self.dp_low_speed_lead = BigParamControlBP("DogPilot: Low-Speed Curve Lead", "DogPilotLowSpeedLead")
     self.dp_camera_offset = BigParamFloatControl(
       "DogPilot: Camera Offset (m, - moves right)", "CameraOffset", min=-0.35, max=0.35, step=0.01,
     )
@@ -32,10 +31,6 @@ class LateralLayoutMici(NavScroller):
       "DogPilot: Mid-Speed Factor (0 = off)", "DogPilotMidSpeedFactor", min=0.0, max=1.5, step=0.05,
     )
     self.dp_live_delay = BigParamControlBP("DogPilot: Live Steer Delay (off = fixed)", "LagdToggle")
-    self.dp_plan_smooth = BigParamControlBP("DogPilot: Highway Smoothing", "DogPilotPlanSmooth")
-    self.dp_give_room = BigParamFloatControl(
-      "DogPilot: Give Room (m, 0 = off)", "DogPilotGiveRoom", min=0.0, max=0.30, step=0.05,
-    )
     self.dp_curve_boost = BigParamFloatControl(
       "DogPilot: Tight-Curve Boost (1.0 = off)", "DogPilotCurveBoost", min=1.0, max=1.5, step=0.05,
     )
@@ -106,7 +101,6 @@ class LateralLayoutMici(NavScroller):
     )
 
     self._scroller.add_widgets([
-      self.dp_low_speed_lead,
       self.dp_camera_offset,
       self.dp_offset_by_speed,
       self.dp_camera_offset_low,
@@ -115,8 +109,6 @@ class LateralLayoutMici(NavScroller):
       self.dp_curve_boost,
       self.dp_mid_speed_factor,
       self.dp_live_delay,
-      self.dp_plan_smooth,
-      self.dp_give_room,
       self.low_speed_factor,
       self.high_speed_factor,
       self.high_speed_dampening,
@@ -140,10 +132,8 @@ class LateralLayoutMici(NavScroller):
     ])
 
     self._refresh_toggles = (
-      ("DogPilotLowSpeedLead", self.dp_low_speed_lead),
       ("DogPilotCurveWideCap", self.dp_curve_wide_cap),
       ("LagdToggle", self.dp_live_delay),
-      ("DogPilotPlanSmooth", self.dp_plan_smooth),
       ("DogPilotOffsetBySpeed", self.dp_offset_by_speed),
       ("disable_BP_lat_UI", self.disable_BP_lat),
       ("BlinkerPauseLaneChange", self.disable_lane_change_under_speed),

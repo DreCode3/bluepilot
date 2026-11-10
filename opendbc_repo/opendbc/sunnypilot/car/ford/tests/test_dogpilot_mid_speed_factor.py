@@ -15,7 +15,6 @@ MPH = 0.44704
 def _pa(v, k, params, lane_change_state=0, steps=60):
   ext = _Harness(_explorer_cp())
   ext.human_turn_detector = _ForcedDetector(False)
-  ext.dp_low_speed_lead = False
   ext.update_angle_params(_FakeParams(params))
   out = None
   for _ in range(steps):
