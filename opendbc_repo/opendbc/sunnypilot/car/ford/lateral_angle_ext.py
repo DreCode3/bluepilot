@@ -106,6 +106,15 @@ _DP_LC_IN_S, _DP_LC_OUT_S = 0.5, 1.5
 _DP_MID_HANDOVER_MS = (25.0 * 0.44704, 35.0 * 0.44704)
 _DP_MID_RANGE = (0.5, 1.5)
 
+# DogPilot: curve look-ahead (param ``DogPilotLookAhead``, s, 0 = off). On curve entry the predicted-curvature half of
+# the blend reads the model's yaw-rate plan only t_base (~0.2 s) ahead from 55 mph (stock VLT adds up to 0.10 s, and
+# only below 55 mph), while the planner's request reads ~0.43 s ahead. Logged highway curve entries: the car turns
+# 0.15 s after the road in left curves (24% of entries > 0.3 s late). With this set, the extra look-ahead is at least
+# this value at every speed (stock's kappa_factor taper and exit-biased blend still apply). Open-loop replay at
+# 0.25 s, 38 drives: half-rise 0.05 / 0.09 / 0.12 / 0.10 s earlier at 20-35 / 35-50 / 50-65 / 65-90 mph, no overshoot
+# change, straight-road command noise +1-10%.
+_DP_LOOKAHEAD_MAX_S = 0.30
+
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.
 # t_lookup = t_base + t_extra_max × speed_factor(v) × kappa_factor(|κ|)
 # t_base = liveDelay.lateralDelay + DT_MDL — always matches the planner's pre-compensation floor.
@@ -176,6 +185,7 @@ class LateralAngleExt:
     # DogPilot: high-demand boost max multiplier (see _DP_BOOST_*); ``DogPilotCurveBoost`` param, 1.0 = off
     self.dp_curve_boost = 1.0
     self.dp_mid_speed_factor = 0.0  # DogPilot: 0 = off (see _DP_MID_*)
+    self.dp_lookahead = 0.0  # DogPilot: curve look-ahead, s, 0 = off (see _DP_LOOKAHEAD_MAX_S)
     self.bp_dp_boost = 1.0
     self.dp_boost_level = 0.0  # 0..1 share of the boost (see _DP_BOOST_*)
     self.dp_lc_weight = 0.0  # 1.0 = lane-change gain (see _DP_LC_*)
@@ -266,6 +276,13 @@ class LateralAngleExt:
         if raw is not None and raw != b"" and raw != "":
           val = float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw)
           self.dp_mid_speed_factor = 0.0 if val <= 0.0 else float(clip(val, *_DP_MID_RANGE))
+      except Exception:
+        pass
+      try:
+        raw = params.get("DogPilotLookAhead", return_default=True)
+        if raw is not None and raw != b"" and raw != "":
+          val = float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw)
+          self.dp_lookahead = float(clip(val, 0.0, _DP_LOOKAHEAD_MAX_S))
       except Exception:
         pass
       try:
@@ -465,6 +482,8 @@ class LateralAngleExt:
     else:
       _kappa_factor = float(interp(abs(desired_curvature), [_VLT_KAPPA_FULL, _VLT_KAPPA_TAPER], [1.0, 0.0]))
     _t_extra = self.vlt_extra_max * _speed_factor
+    if self.dp_lookahead > 0.0:  # DogPilot: curve look-ahead (see _DP_LOOKAHEAD_MAX_S)
+      _t_extra = max(_t_extra, self.dp_lookahead)
     curvature_lookup_time = _t_base + _t_extra * _kappa_factor
     self.bp_curvature_lookup_time = curvature_lookup_time
 

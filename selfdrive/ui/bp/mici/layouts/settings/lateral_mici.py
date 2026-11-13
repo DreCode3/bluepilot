@@ -30,6 +30,9 @@ class LateralLayoutMici(NavScroller):
     self.dp_mid_speed_factor = BigParamFloatControl(
       "DogPilot: Mid-Speed Factor (0 = off)", "DogPilotMidSpeedFactor", min=0.0, max=1.5, step=0.05,
     )
+    self.dp_lookahead = BigParamFloatControl(
+      "DogPilot: Curve Look-Ahead (s, 0 = off)", "DogPilotLookAhead", min=0.0, max=0.30, step=0.05,
+    )
     self.dp_live_delay = BigParamControlBP("DogPilot: Live Steer Delay (off = fixed)", "LagdToggle")
     self.dp_curve_boost = BigParamFloatControl(
       "DogPilot: Tight-Curve Boost (1.0 = off)", "DogPilotCurveBoost", min=1.0, max=1.5, step=0.05,
@@ -108,6 +111,7 @@ class LateralLayoutMici(NavScroller):
       self.dp_curve_wide_cap,
       self.dp_curve_boost,
       self.dp_mid_speed_factor,
+      self.dp_lookahead,
       self.dp_live_delay,
       self.low_speed_factor,
       self.high_speed_factor,

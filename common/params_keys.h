@@ -312,6 +312,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DogPilotCurveBoost", {PERSISTENT | BACKUP, FLOAT, "1.0"}},  // DogPilot: high-demand path-angle boost, 1.0 = off (lateral_angle_ext.py)
     {"DogPilotCurveWideCap", {PERSISTENT | BACKUP, BOOL, "0"}},  // DogPilot: curve-centering cap from lane width (modeld)
     {"DogPilotMidSpeedFactor", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // DogPilot: mid-speed factor above 40 mph, 0 = off (lateral_angle_ext.py)
+    {"DogPilotLookAhead", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // DogPilot: curve look-ahead, s, 0 = off (lateral_angle_ext.py)
     {"DogPilotOffsetBySpeed", {PERSISTENT | BACKUP, BOOL, "0"}},  // DogPilot: CameraOffset from 65 mph, DogPilotCameraOffsetLow to 50 mph (modeld)
     {"DogPilotCameraOffsetLow", {PERSISTENT | BACKUP, FLOAT, "-0.05"}},  // DogPilot: camera offset up to 50 mph when by speed, m (modeld)
     {"FordHighSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
