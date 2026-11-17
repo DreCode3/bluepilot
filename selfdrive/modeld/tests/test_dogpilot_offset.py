@@ -9,7 +9,8 @@ from openpilot.common.transformations.model import get_warp_matrix, medmodel_int
 from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DP_CURVE_MAX_M, DP_CURVE_RATE_MS, DPCurveCentering,
-                                                        dp_offset_for_speed, dp_shift_model_warp)
+                                                        DPOffsetCurveFade, dp_faded_offset, dp_offset_for_speed,
+                                                        dp_shift_model_warp)
 
 H = 1.40
 RPY = np.radians([0.0, 2.5, -2.9])  # a pitched, yawed mount, like the car this was written for
@@ -201,6 +202,71 @@ class TestDogPilotOffsetBySpeed(unittest.TestCase):
     self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 57.5 * MPH), -0.125)
     self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 65 * MPH), -0.20)
     self.assertAlmostEqual(dp_offset_for_speed(-0.20, -0.05, True, 80 * MPH), -0.20)
+
+
+
+class TestDogPilotOffsetCurveFade(unittest.TestCase):
+  """Static camera offset faded in curves (DogPilotOffsetCurveFade): full on straights, (1 - F) of it in curves, held
+  through short gaps (S-bends), lane changes and unusable lane lines, released after the road straightens."""
+  V = 25.0
+
+  def run_k(self, cc, fade, k, s, v=None, active=True, prob=0.9, hold=False):
+    v = self.V if v is None else v
+    left, right = lanes(k)
+    out = []
+    for _ in range(int(round(s / cc.dt))):
+      cc.update(left, right, prob, prob, v, 1.5, active, hold=hold)
+      out.append(fade.update(cc.k, v, active, hold=hold))
+    return out
+
+  def setUp(self):
+    self.cc = DPCurveCentering(ModelConstants.X_IDXS)
+    self.fade = DPOffsetCurveFade(self.cc.dt)
+
+  def test_off_leaves_the_offset_alone(self):
+    for level in (0.0, 0.5, 1.0):
+      self.assertEqual(dp_faded_offset(-0.12, 0.0, level), -0.12)
+    self.assertAlmostEqual(dp_faded_offset(-0.12, 0.6, 1.0), -0.048)
+    self.assertAlmostEqual(dp_faded_offset(-0.20, 1.7, 1.0), 0.0)   # F clipped to 1
+
+  def test_straight_keeps_the_full_offset(self):
+    self.assertEqual(max(self.run_k(self.cc, self.fade, 0.0, 10.0)), 0.0)
+
+  def test_gentle_curve_below_threshold(self):
+    # 0.0005 1/m at 25 m/s = 0.31 m/s^2 < 0.4
+    self.assertEqual(max(self.run_k(self.cc, self.fade, 0.0005, 10.0)), 0.0)
+
+  def test_curve_fades_within_a_second(self):
+    out = self.run_k(self.cc, self.fade, 0.002, 3.0)   # 1.25 m/s^2
+    self.assertAlmostEqual(out[int(1.0 / self.cc.dt)], 1.0, places=6)
+    self.assertEqual(self.cc.k is not None, True)
+
+  def test_holds_then_releases_after_the_curve(self):
+    self.run_k(self.cc, self.fade, 0.002, 3.0)
+    out = self.run_k(self.cc, self.fade, 0.0, 8.0)
+    self.assertEqual(out[int(1.4 / self.cc.dt)], 1.0)                        # still held at 1.4 s
+    self.assertAlmostEqual(out[int(3.5 / self.cc.dt)], 0.5, delta=0.03)      # 1.5 s hold + 2 s at 0.25/s
+    self.assertEqual(out[-1], 0.0)
+
+  def test_holds_through_an_s_bend(self):
+    self.run_k(self.cc, self.fade, 0.002, 3.0)
+    gap = self.run_k(self.cc, self.fade, 0.0, 2.5)
+    self.assertGreaterEqual(min(gap), 0.73)   # 1.5 s hold + 1 s at 0.25/s
+    out = self.run_k(self.cc, self.fade, -0.002, 2.0)
+    self.assertAlmostEqual(out[-1], 1.0)
+
+  def test_held_during_a_lane_change_and_without_lines(self):
+    self.run_k(self.cc, self.fade, 0.002, 3.0)
+    self.assertEqual(min(self.run_k(self.cc, self.fade, 0.0, 4.0, hold=True)), 1.0)
+    self.assertEqual(min(self.run_k(self.cc, self.fade, 0.0, 4.0, prob=0.2)), 1.0)
+
+  def test_released_with_lateral_off_or_slow(self):
+    self.run_k(self.cc, self.fade, 0.002, 3.0)
+    out = self.run_k(self.cc, self.fade, 0.002, 2.0, active=False)
+    self.assertAlmostEqual(out[-1], 0.5, delta=0.03)                          # falls at 0.25/s straight away
+    fade = DPOffsetCurveFade(self.cc.dt)
+    cc = DPCurveCentering(ModelConstants.X_IDXS)
+    self.assertEqual(max(self.run_k(cc, fade, 0.02, 3.0, v=8.0)), 0.0)      # below 20 mph: never fades
 
 
 if __name__ == "__main__":

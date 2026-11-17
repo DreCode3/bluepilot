@@ -84,6 +84,7 @@ class DPCurveCentering:
     self.tight = 0.0          # held fade level, 0..1 (see DP_CURVE_FADE_*)
     self.target = 0.0
     self.offset = 0.0
+    self.k = None             # last lane-centre curvature ahead (1/m), None when unusable (read by DPOffsetCurveFade)
 
   @staticmethod
   def _fit_row(x_samples, x_idx):
@@ -130,6 +131,7 @@ class DPCurveCentering:
     if hold and active:
       return self.offset
     k = self._curvature(left_y, right_y, left_prob, right_prob) if active else None
+    self.k = k
     if k is not None:   # usable lane lines: track the lane width for the wide-lane cap
       w = float(np.asarray(right_y)[0] - np.asarray(left_y)[0])
       self.width = w if self.width is None else self.width + (w - self.width) * min(1.0, self.dt / DP_CURVE_WIDTH_TAU_S)
@@ -147,3 +149,55 @@ class DPCurveCentering:
     step = DP_CURVE_RATE_MS * self.dt
     self.offset += min(max(self.target - self.offset, -step), step)
     return self.offset
+
+
+# DogPilot: camera offset faded in curves (param DogPilotOffsetCurveFade, 0..1, 0 = off). The static offset is there to
+# centre the car on straights, but in curves it points inward on one side and outward on the other: a rightward offset
+# pushes right curves inside (town cutting) and stacks with curve centering's outward shift in left curves (0.44 m
+# outward vs 0.04 m in right curves at -0.20). With F set, the static offset is scaled by (1 - F * level) where level
+# follows the curve ahead (same lane-centre curvature as curve centering): 0 below 0.4 m/s^2, 1 above 0.9. It rises at
+# most 1/s, and only falls once the road has been under 0.4 m/s^2 for 1.5 s, then at 0.25/s, so it holds through the
+# 2-4 s gap of an S-bend instead of bouncing (the offset points the same way in both curves). Held during lane changes
+# and while the lane lines are unusable; released below 20 mph or with lateral off. The change still goes through
+# modeld's 2 s offset ease. Screened on logs and the Mac video replay (town -0.12, F 0.6): town curves and S-bends
+# within 0.01 m/s^2 of today, highway left curves 0.05 m/s^2 more inward, right curves 0.05 more outward.
+DP_FADE_ACC_MS2 = (0.4, 0.9)
+DP_FADE_RISE_PER_S = 1.0
+DP_FADE_HOLD_S = 1.5
+DP_FADE_FALL_PER_S = 0.25
+DP_FADE_V_MIN = 9.0
+
+
+class DPOffsetCurveFade:
+  """How much of the static camera offset to fade out now: 0 on straights, 1 in curves (see DP_FADE_*)."""
+
+  def __init__(self, dt=0.05):
+    self.dt = dt
+    self.level = 0.0
+    self.below_s = 0.0
+
+  def update(self, k, v_ego, active, hold=False):
+    """k: DPCurveCentering.k from this frame (None when the lane lines aren't usable)."""
+    if hold and active:
+      return self.level
+    if not active or v_ego < DP_FADE_V_MIN:
+      self.below_s = 0.0
+      self.level = max(0.0, self.level - DP_FADE_FALL_PER_S * self.dt)
+      return self.level
+    if k is None:
+      return self.level
+    a_lat = abs(k) * v_ego * v_ego
+    target = min(max((a_lat - DP_FADE_ACC_MS2[0]) / (DP_FADE_ACC_MS2[1] - DP_FADE_ACC_MS2[0]), 0.0), 1.0)
+    self.below_s = self.below_s + self.dt if a_lat < DP_FADE_ACC_MS2[0] else 0.0
+    if target >= self.level:
+      self.level = min(target, self.level + DP_FADE_RISE_PER_S * self.dt)
+    elif self.below_s >= DP_FADE_HOLD_S:
+      self.level = max(target, self.level - DP_FADE_FALL_PER_S * self.dt)
+    return self.level
+
+
+def dp_faded_offset(offset, fade, level):
+  """Static offset with the curve fade applied (fade 0 = off -> unchanged)."""
+  if fade <= 0.0:
+    return offset
+  return offset * (1.0 - min(fade, 1.0) * level)

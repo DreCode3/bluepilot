@@ -28,8 +28,8 @@ from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, 
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.common.transformations.model import medmodel_intrinsics, sbigmodel_intrinsics
-from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DPCurveCentering, dp_offset_for_speed,
-                                                        dp_shift_model_warp)
+from openpilot.selfdrive.modeld.dogpilot_offset import (DP_CURVE_FADE_MS2, DPCurveCentering, DPOffsetCurveFade,
+                                                        dp_faded_offset, dp_offset_for_speed, dp_shift_model_warp)
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 
 LaneChangeState = log.LaneChangeState
@@ -210,6 +210,8 @@ def main(demo=False):
   dp_offset = 0.0
   dp_curve_strength = 0.0
   dp_curve = DPCurveCentering(ModelConstants.X_IDXS, DT_MDL)
+  dp_fade = DPOffsetCurveFade(DT_MDL)  # DogPilotOffsetCurveFade: static offset faded in curves
+  dp_offset_fade = 0.0
   dp_offset_high, dp_offset_low, dp_offset_by_speed = 0.0, 0.0, False
   dp_height = 1.22
   dp_settings_last = None
@@ -290,10 +292,12 @@ def main(demo=False):
                        bool(params.get_bool("LagdToggle")), round(float(model.lat_delay), 2),
                        bool(params.get_bool("DogPilotOffsetBySpeed")),
                        float(params.get("DogPilotCameraOffsetLow", return_default=True) or 0.0),
-                       float(params.get("DogPilotLookAhead", return_default=True) or 0.0))
+                       float(params.get("DogPilotLookAhead", return_default=True) or 0.0),
+                       float(params.get("DogPilotOffsetCurveFade", return_default=True) or 0.0))
         dp_offset_high = max(-0.35, min(0.35, dp_settings[0]))
         dp_offset_by_speed = dp_settings[6]
         dp_offset_low = max(-0.35, min(0.35, dp_settings[7]))
+        dp_offset_fade = max(0.0, min(1.0, dp_settings[9]))
         dp_curve_strength = max(0.0, min(2.0, dp_settings[1]))
         dp_curve.wide_cap = dp_settings[2]
         if dp_settings != dp_settings_last:
@@ -303,7 +307,7 @@ def main(demo=False):
                          curve_lc_hold=True, curve_fade_from=DP_CURVE_FADE_MS2[0], curve_wide_cap=dp_settings[2],
                          mid_speed_factor=dp_settings[3], live_delay=dp_settings[4], lat_delay=dp_settings[5],
                          plan_smooth=False, give_room=0.0, offset_by_speed=dp_settings[6],
-                         offset_low=dp_settings[7], look_ahead=dp_settings[8])
+                         offset_low=dp_settings[7], look_ahead=dp_settings[8], offset_curve_fade=dp_settings[9])
           dp_settings_last = dp_settings
       except Exception:
         cloudlog.exception("dogpilot: reading settings failed")
@@ -321,7 +325,8 @@ def main(demo=False):
     model_transform_main, model_transform_extra = base_transform_main, base_transform_extra
     if live_calib_seen:
       try:
-        dp_offset_target = dp_offset_for_speed(dp_offset_high, dp_offset_low, dp_offset_by_speed, v_ego)
+        dp_offset_target = dp_faded_offset(dp_offset_for_speed(dp_offset_high, dp_offset_low, dp_offset_by_speed, v_ego),
+                                           dp_offset_fade, dp_fade.level)
         dp_offset += 0.025 * (dp_offset_target - dp_offset)
         dp_total = dp_offset + dp_curve.offset
         if abs(dp_total) > 1e-4:
@@ -398,6 +403,12 @@ def main(demo=False):
       except Exception:
         cloudlog.exception("dogpilot: curve centering failed")
         dp_curve.offset = dp_curve.target = 0.0
+        dp_curve.k = None
+      try:
+        dp_fade.update(dp_curve.k, v_ego, sm['carControl'].latActive, hold=DH.lane_change_state != LaneChangeState.off)
+      except Exception:
+        cloudlog.exception("dogpilot: offset curve fade failed")
+        dp_fade.level = 0.0
 
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
       pm.send('modelV2', modelv2_send)
