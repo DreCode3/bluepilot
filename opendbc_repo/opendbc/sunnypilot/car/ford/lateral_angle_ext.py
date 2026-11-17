@@ -115,6 +115,23 @@ _DP_MID_RANGE = (0.5, 1.5)
 # change, straight-road command noise +1-10%.
 _DP_LOOKAHEAD_MAX_S = 0.30
 
+# DogPilot: exit gain hold (param ``DogPilotExitGainHold``, s, 0 = off). The path-angle gain switches from the
+# low-curvature to the high-curvature value as |kappa_cmd| crosses 0.0007-0.001 1/m (about 1.0 vs 1.3 x Low Speed
+# Adjustment Factor in town). On every curve exit the request falls through that band, so the tail of the unwind gets
+# the low gain: logged 20-45 mph exits, command 0.72-0.82 of the in-curve gain and the car 0.66-0.78 of the request
+# (1.11 inside the curve), 0.70-0.73 at 45-60 mph; the car straightens early and drifts outside before re-centring.
+# When set, after a real curve (request above _DP_EXIT_ARM_ACCEL for _DP_EXIT_ARM_S) the gain blend uses a peak-held
+# |kappa| that comes down by 0.001 1/m over this many seconds, so the in-curve gain carries through the exit; the hold
+# ends once the request is back under the band and the held value has caught up. Never during a lane change. Acts
+# after the deviation clip, like the speed factors. Highway exits don't drop (and are clean), so the hold fades out
+# from 55 to 65 mph. Open-loop on 16 drives at 3 s: exit-tail command x1.30 at 20-45 mph, x1.24 at 45-60; straights
+# away from curves changed on 5-7% of frames by <= 0.08 m/s^2.
+_DP_EXIT_V_MS = (55.0 * 0.44704, 65.0 * 0.44704)
+_DP_EXIT_ARM_ACCEL = 0.6
+_DP_EXIT_ARM_S = 1.0
+_DP_EXIT_HOLD_RANGE = (0.0, 5.0)
+_DP_GAIN_BAND = (0.0007, 0.001)
+
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.
 # t_lookup = t_base + t_extra_max × speed_factor(v) × kappa_factor(|κ|)
 # t_base = liveDelay.lateralDelay + DT_MDL — always matches the planner's pre-compensation floor.
@@ -186,6 +203,10 @@ class LateralAngleExt:
     self.dp_curve_boost = 1.0
     self.dp_mid_speed_factor = 0.0  # DogPilot: 0 = off (see _DP_MID_*)
     self.dp_lookahead = 0.0  # DogPilot: curve look-ahead, s, 0 = off (see _DP_LOOKAHEAD_MAX_S)
+    self.dp_exit_hold_s = 0.0  # DogPilot: exit gain hold, s, 0 = off (see _DP_EXIT_*)
+    self.dp_exit_arm_s = 0.0
+    self.dp_exit_armed = False
+    self.dp_exit_level = 0.0
     self.bp_dp_boost = 1.0
     self.dp_boost_level = 0.0  # 0..1 share of the boost (see _DP_BOOST_*)
     self.dp_lc_weight = 0.0  # 1.0 = lane-change gain (see _DP_LC_*)
@@ -286,6 +307,13 @@ class LateralAngleExt:
       except Exception:
         pass
       try:
+        raw = params.get("DogPilotExitGainHold", return_default=True)
+        if raw is not None and raw != b"" and raw != "":
+          val = float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw)
+          self.dp_exit_hold_s = float(clip(val, *_DP_EXIT_HOLD_RANGE))
+      except Exception:
+        pass
+      try:
         raw = params.get("DogPilotCurveBoost", return_default=True)
         if raw is not None and raw != b"" and raw != "":
           self.dp_curve_boost = float(clip(
@@ -309,6 +337,25 @@ class LateralAngleExt:
         except Exception:
           pass
 
+  def _dp_exit_hold(self, k, v_ego):
+    """DogPilot: (held |kappa|, weight) for the gain blend after a curve (see _DP_EXIT_*); weight 0 = not holding."""
+    if self.dp_exit_hold_s <= 0.0 or self.lane_change:
+      self.dp_exit_arm_s, self.dp_exit_armed, self.dp_exit_level = 0.0, False, k
+      return k, 0.0
+    self.dp_exit_arm_s = self.dp_exit_arm_s + _STEER_DT if k * v_ego * v_ego > _DP_EXIT_ARM_ACCEL else 0.0
+    if self.dp_exit_arm_s >= _DP_EXIT_ARM_S:
+      self.dp_exit_armed = True
+    if not self.dp_exit_armed:
+      self.dp_exit_level = k
+      return k, 0.0
+    if k >= self.dp_exit_level:
+      self.dp_exit_level = k
+    else:
+      self.dp_exit_level = max(k, self.dp_exit_level - _DP_GAIN_BAND[1] / self.dp_exit_hold_s * _STEER_DT)
+    if self.dp_exit_level <= k + 1e-12 and k < _DP_GAIN_BAND[0]:
+      self.dp_exit_armed = False
+    return self.dp_exit_level, float(interp(v_ego, _DP_EXIT_V_MS, [1.0, 0.0]))
+
   def update_angle_strategy(self, CC, CS, actuators, CP):
     """
     Curvature from planner (+ optional predicted blend, + lane centering trim) → path_angle via
@@ -319,6 +366,7 @@ class LateralAngleExt:
     self._ensure_lateral_curv_initialized(CP)
     if not CC.latActive:
       self.dp_boost_level = 0.0  # DogPilot: boost hold restarts from zero on every engagement
+      self.dp_exit_arm_s, self.dp_exit_armed, self.dp_exit_level = 0.0, False, 0.0  # DogPilot: exit hold too
 
     v_ego = float(CS.out.vEgoRaw)
     d_ref = pscm_d_ref_m(v_ego)
@@ -600,6 +648,10 @@ class LateralAngleExt:
 
     # As the curve gets bigger, we will need a little boost to the signal to to not understeer
     self.curvature_factor = interp(abs(kappa_cmd), [0.0007, 0.001], [self.low_gain_calc, self.high_gain_calc])
+    _k_held, _w_held = self._dp_exit_hold(abs(kappa_cmd), v_ego)  # DogPilot: exit gain hold (see _DP_EXIT_*)
+    if _w_held > 0.0:
+      _f_held = interp(_k_held, list(_DP_GAIN_BAND), [self.low_gain_calc, self.high_gain_calc])
+      self.curvature_factor += _w_held * (_f_held - self.curvature_factor)
 
     path_angle_calc = kappa_cmd * v_ego * self.curvature_factor
     # DogPilot: high-demand boost (see _DP_BOOST_*)

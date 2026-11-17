@@ -313,6 +313,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DogPilotCurveWideCap", {PERSISTENT | BACKUP, BOOL, "0"}},  // DogPilot: curve-centering cap from lane width (modeld)
     {"DogPilotMidSpeedFactor", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // DogPilot: mid-speed factor above 40 mph, 0 = off (lateral_angle_ext.py)
     {"DogPilotLookAhead", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // DogPilot: curve look-ahead, s, 0 = off (lateral_angle_ext.py)
+    {"DogPilotExitGainHold", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // DogPilot: in-curve gain held through exits, s, 0 = off (lateral_angle_ext.py)
     {"DogPilotOffsetCurveFade", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // DogPilot: share of the camera offset faded in curves, 0 = off (modeld)
     {"DogPilotOffsetBySpeed", {PERSISTENT | BACKUP, BOOL, "0"}},  // DogPilot: CameraOffset from 65 mph, DogPilotCameraOffsetLow to 50 mph (modeld)
     {"DogPilotCameraOffsetLow", {PERSISTENT | BACKUP, FLOAT, "-0.05"}},  // DogPilot: camera offset up to 50 mph when by speed, m (modeld)
