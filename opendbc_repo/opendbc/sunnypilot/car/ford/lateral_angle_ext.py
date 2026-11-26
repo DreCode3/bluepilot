@@ -67,6 +67,11 @@ _CANFD_SUV_CARS = frozenset({
 # DBC ``LatCtlPath_An_Actl`` (rad) — panda safety uses the same in ``ford.h``; PSCM enforces in firmware.
 FORD_DBC_PATH_ANGLE_MIN = -0.5
 FORD_DBC_PATH_ANGLE_MAX = 0.5235
+# DogPilot: path_angle here is host sign (+ = right) and carcontroller.py sends -path_angle, so the host-side limits
+# are the DBC range mirrored. Clamping the host value to the DBC range let a right turn above +0.5 go out below -0.5,
+# where the 11-bit field underflows and wraps to near full left (seen once, a 7.7 mph right turn, Nov 2026).
+FORD_HOST_PATH_ANGLE_MIN = -FORD_DBC_PATH_ANGLE_MAX   # -0.5235 = wire +0.5235 (left)
+FORD_HOST_PATH_ANGLE_MAX = -FORD_DBC_PATH_ANGLE_MIN   # +0.5 = wire -0.5 (right)
 
 
 # PSCM d_ref (m) vs speed (m/s) — 6 points; above ~55.6 m/s use plateau + optional cap to 5 m.
@@ -558,8 +563,8 @@ class LateralAngleExt:
     # That caused a positive-feedback flat-line: under-steer → CtrSat → path_angle frozen → more under-steer.
     # Use DBC-limit proximity instead: only block when path_angle is already near the ±0.5 rad CAN limits,
     # which is the only condition where the anti-snap unwind rate cap makes physical sense.
-    _dbc_sat = (self.path_angle_last >= FORD_DBC_PATH_ANGLE_MAX * 0.90 or
-                self.path_angle_last <= FORD_DBC_PATH_ANGLE_MIN * 0.90)
+    _dbc_sat = (self.path_angle_last >= FORD_HOST_PATH_ANGLE_MAX * 0.90 or
+                self.path_angle_last <= FORD_HOST_PATH_ANGLE_MIN * 0.90)
     _in_hard_sat = _pscm_lim >= 2 or _dbc_sat
     # BluePilot: per-call delta threshold. The original 0.002 was authored 2026-05-07 on
     # bp-sid-simple (9c3d000fd), which ran STEER_STEP=1 (true 100Hz, switched 2026-04-22) -- so it
@@ -690,7 +695,7 @@ class LateralAngleExt:
     elif _pscm_lim >= 1:  # LimitClose (F150/non-angle-mode only): block increases only
       path_angle = float(clip(path_angle, -abs(self.path_angle_last), abs(self.path_angle_last)))
 
-    path_angle = min(FORD_DBC_PATH_ANGLE_MAX, max(FORD_DBC_PATH_ANGLE_MIN, path_angle))
+    path_angle = min(FORD_HOST_PATH_ANGLE_MAX, max(FORD_HOST_PATH_ANGLE_MIN, path_angle))
 
     # Soft ROC limit — unconditional, slightly tighter than ford.h, applied before the
     # hardware bypass in ford.h is re-enabled.  Lets us observe whether the limit would
